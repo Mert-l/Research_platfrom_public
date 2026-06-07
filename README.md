@@ -8,6 +8,8 @@ The system has 3 parts:
 2. Local API: stores button mappings, sound files, and button-press logs in `mock_device/`.
 3. Arduino Nano ESP32: reads 4 physical buttons, plays audio, and posts press logs to the API.
 
+The app can be accessed here: [Open the app](https://parrots-public.vercel.app/)
+
 ---
 
 ## Requirements
