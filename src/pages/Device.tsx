@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Music, Upload, Play, Pause, X, Save, Wifi } from "lucide-react";
+import { Music, Upload, Play, Pause, X, Save, Wifi, Shuffle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface SoundFile {
@@ -39,8 +39,7 @@ const emptyButtons: ButtonConfig[] = [1, 2, 3, 4].map((id) => ({
   audioUrl: null,
 }));
 
-const API_BASE =
-  import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 const MAX_AUDIO_SECONDS = 120;
 const allowedAudioTypes = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave"];
@@ -48,6 +47,17 @@ const allowedAudioExtensions = [".mp3", ".wav"];
 
 function getSoundUrl(fileName: string) {
   return `${API_BASE}/api/sounds/${encodeURIComponent(fileName)}`;
+}
+
+function shuffleArray<T>(items: T[]) {
+  const shuffled = [...items];
+
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  return shuffled;
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -237,6 +247,75 @@ export default function Device() {
     if (!res.ok) throw new Error("Could not save config to API");
   };
 
+  const handleShuffleButtonSounds = async () => {
+    const assignedSoundFiles = buttons.map((button) => button.soundFile).filter(Boolean);
+    const uniqueAssignedSoundFiles = new Set(assignedSoundFiles);
+
+    if (assignedSoundFiles.length !== buttons.length) {
+      toast({
+        title: "Cannot shuffle yet",
+        description: "All 4 buttons need a sound before shuffling.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (uniqueAssignedSoundFiles.size !== buttons.length) {
+      toast({
+        title: "Duplicate sounds found",
+        description: "Each button must have a different sound before shuffling.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      let shuffledSounds = shuffleArray(
+        buttons.map((button) => ({
+          soundFile: button.soundFile,
+          songName: button.songName,
+        }))
+      );
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const changedSomething = shuffledSounds.some(
+          (sound, index) => sound.soundFile !== buttons[index].soundFile
+        );
+
+        if (changedSomething) break;
+        shuffledSounds = shuffleArray(shuffledSounds);
+      }
+
+      const nextButtons = buttons.map((button, index) => {
+        const nextSound = shuffledSounds[index];
+
+        return {
+          ...button,
+          soundFile: nextSound.soundFile,
+          songName:
+            soundLabel.get(nextSound.soundFile) ||
+            nextSound.songName ||
+            nextSound.soundFile.replace(/\.[^.]+$/, ""),
+          audioUrl: nextSound.soundFile ? getSoundUrl(nextSound.soundFile) : null,
+        };
+      });
+
+      await saveMappingToApi(nextButtons);
+      setButtons(nextButtons);
+
+      toast({
+        title: "Sounds shuffled",
+        description: "The 4 existing sounds were randomly reassigned with no duplicates.",
+      });
+    } catch (error) {
+      toast({
+        title: "Shuffle failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleSave = async () => {
     if (!selectedButton) return;
 
@@ -294,35 +373,15 @@ export default function Device() {
     }
   };
 
-  const simulatePress = async (button: ButtonConfig) => {
-    try {
-      if (button.audioUrl) new Audio(button.audioUrl).play();
-
-      const ownerEmail = localStorage.getItem("parrot_owner_email") || "";
-
-      const res = await fetch(`${API_BASE}/api/log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          button: button.id,
-          soundfile: button.soundFile,
-          owner_email: ownerEmail,
-        }),
-      });
-
-      if (!res.ok) throw new Error("Could not write log entry");
-
-      toast({
-        title: "Button press logged",
-        description: `Button ${button.id}: ${button.soundFile || "no sound assigned"}`,
-      });
-    } catch (error) {
-      toast({
-        title: "Logging failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      });
+  const previewButtonSound = (button: ButtonConfig) => {
+    if (button.audioUrl) {
+      new Audio(button.audioUrl).play();
     }
+
+    toast({
+      title: "Sound preview",
+      description: `Previewing Button ${button.id}: ${button.soundFile || "no sound assigned"}`,
+    });
   };
 
   return (
@@ -330,12 +389,23 @@ export default function Device() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Device Configuration</h1>
-          <p className="text-muted-foreground mt-1">Assign sounds to each physical button and test logging.</p>
+          <p className="text-muted-foreground mt-1">Assign sounds to each physical button and preview playback.</p>
         </div>
 
-        <div className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${apiOnline ? "text-green-700" : "text-destructive"}`}>
-          <Wifi className="h-3 w-3" />
-          {apiOnline ? "API online" : "API offline"}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleShuffleButtonSounds}>
+            <Shuffle className="h-4 w-4 mr-2" />
+            Shuffle sounds
+          </Button>
+
+          {/* <div
+            className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${
+              apiOnline ? "text-green-700" : "text-destructive"
+            }`}
+          >
+            <Wifi className="h-3 w-3" />
+            {apiOnline ? "API online" : "API offline"}
+          </div> */}
         </div>
       </div>
 
@@ -355,9 +425,9 @@ export default function Device() {
                 {buttons.map((btn) => (
                   <button
                     key={btn.id}
-                    onClick={() => simulatePress(btn)}
+                    onClick={() => previewButtonSound(btn)}
                     onDoubleClick={() => openConfig(btn)}
-                    title="Click to simulate press. Double-click to configure."
+                    title="Click to preview sound. Double-click to configure."
                     className="w-24 h-24 rounded-xl border-2 border-border transition-all duration-150 hover:scale-105 hover:shadow-md flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95"
                     style={{ backgroundColor: btn.color }}
                   >
@@ -376,7 +446,9 @@ export default function Device() {
             </div>
           </div>
 
-          <p className="mt-4 text-center text-xs text-muted-foreground">Click a button to test playback/logging. Double-click a button to assign a sound.</p>
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            Click a button to preview playback. Double-click a button to assign a sound.
+          </p>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
             {buttons.map((btn) => (

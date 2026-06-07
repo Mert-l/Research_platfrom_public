@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   BarChart,
   Bar,
@@ -12,8 +13,10 @@ import {
   PieChart,
   Pie,
   Cell,
+  Legend,
   AreaChart,
   Area,
+  Label,
 } from "recharts";
 import {
   Download,
@@ -46,9 +49,20 @@ interface OwnerProfile {
   updated_at?: string | null;
 }
 
-const API_BASE =
-  import.meta.env.VITE_API_URL ||
-  "http://localhost:3001";
+type ResearchChartId =
+  | "topSounds"
+  | "buttonDistribution"
+  | "dailyPresses"
+  | "timeOfDay";
+
+const chartOptions: { id: ResearchChartId; label: string }[] = [
+  { id: "topSounds", label: "Top Sounds" },
+  { id: "buttonDistribution", label: "Button Press Distribution" },
+  { id: "dailyPresses", label: "Daily Button Presses" },
+  { id: "timeOfDay", label: "Time-of-Day Patterns" },
+];
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 const buttonColors: Record<number, string> = {
   1: "hsl(201, 96%, 39%)",
@@ -63,13 +77,7 @@ function formatDateTime(timestamp: number) {
 }
 
 function exportCSV(logs: LogEntry[]) {
-  const headers = [
-    "timestamp",
-    "datetime",
-    "owner_email",
-    "button",
-    "soundfile",
-  ];
+  const headers = ["timestamp", "datetime", "owner_email", "button", "soundfile"];
 
   const rows = logs.map((d) =>
     [
@@ -82,11 +90,8 @@ function exportCSV(logs: LogEntry[]) {
   );
 
   const csv = [headers.join(","), ...rows].join("\n");
-
   const blob = new Blob([csv], { type: "text/csv" });
-
   const url = URL.createObjectURL(blob);
-
   const a = document.createElement("a");
 
   a.href = url;
@@ -99,6 +104,12 @@ function exportCSV(logs: LogEntry[]) {
 export default function Research() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [profiles, setProfiles] = useState<OwnerProfile[]>([]);
+  const [visibleCharts, setVisibleCharts] = useState<Record<ResearchChartId, boolean>>({
+    topSounds: true,
+    buttonDistribution: true,
+    dailyPresses: true,
+    timeOfDay: true,
+  });
 
   const loadLogs = async () => {
     const res = await fetch(`${API_BASE}/api/logs`);
@@ -108,7 +119,6 @@ export default function Research() {
     }
 
     const data = await res.json();
-
     setLogs(data.logs || []);
   };
 
@@ -158,9 +168,7 @@ export default function Research() {
 
     [1, 2, 3, 4].forEach((id) => counts.set(id, 0));
 
-    logs.forEach((l) =>
-      counts.set(l.button, (counts.get(l.button) || 0) + 1)
-    );
+    logs.forEach((l) => counts.set(l.button, (counts.get(l.button) || 0) + 1));
 
     return [...counts.entries()].map(([button, value]) => ({
       name: `Button ${button}`,
@@ -209,26 +217,18 @@ export default function Research() {
   const ownerStats = useMemo(() => {
     return profiles.map((profile) => {
       const ownerLogs = logs.filter(
-        (log) =>
-          profile.email &&
-          log.owner_email === profile.email
+        (log) => profile.email && log.owner_email === profile.email
       );
 
-      const favorite = ownerLogs.reduce<Record<string, number>>(
-        (acc, log) => {
-          const key = log.soundfile || "Unassigned";
-
-          acc[key] = (acc[key] || 0) + 1;
-
-          return acc;
-        },
-        {}
-      );
+      const favorite = ownerLogs.reduce<Record<string, number>>((acc, log) => {
+        const key = log.soundfile || "Unassigned";
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
 
       const favoriteSound =
-        Object.entries(favorite).sort(
-          (a, b) => b[1] - a[1]
-        )[0]?.[0] || "No data yet";
+        Object.entries(favorite).sort((a, b) => b[1] - a[1])[0]?.[0] ||
+        "No data yet";
 
       return {
         ...profile,
@@ -240,9 +240,7 @@ export default function Research() {
 
   const favoriteSong = topSongs[0]?.name || "No data yet";
 
-  const songsAssigned = new Set(
-    logs.map((l) => l.soundfile).filter(Boolean)
-  ).size;
+  const songsAssigned = new Set(logs.map((l) => l.soundfile).filter(Boolean)).size;
 
   const activityStats = [
     {
@@ -267,8 +265,17 @@ export default function Research() {
     },
   ];
 
+  const toggleChart = (id: ResearchChartId, checked: boolean) => {
+    setVisibleCharts((current) => ({
+      ...current,
+      [id]: checked,
+    }));
+  };
+
+  const hasVisibleCharts = Object.values(visibleCharts).some(Boolean);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-x-hidden">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">
@@ -276,7 +283,7 @@ export default function Research() {
           </h1>
 
           <p className="text-muted-foreground mt-1">
-            Overview of registered owners and button-press data.
+            Overview of registered owners and device button-press data.
           </p>
         </div>
 
@@ -301,9 +308,7 @@ export default function Research() {
                 <s.icon className="h-5 w-5 text-primary" />
 
                 <div>
-                  <p className="text-xs text-muted-foreground">
-                    {s.label}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{s.label}</p>
 
                   <p className="text-2xl font-bold truncate max-w-64">
                     {s.value}
@@ -317,9 +322,7 @@ export default function Research() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Registered Owners
-          </CardTitle>
+          <CardTitle className="text-base">Registered Owners</CardTitle>
         </CardHeader>
 
         <CardContent>
@@ -346,46 +349,17 @@ export default function Research() {
 
                 <tbody>
                   {ownerStats.map((owner) => (
-                    <tr
-                      key={owner.email || owner.id}
-                      className="border-b last:border-0"
-                    >
+                    <tr key={owner.email || owner.id} className="border-b last:border-0">
+                      <td className="py-2 pr-4">{owner.owner_name || "-"}</td>
+                      <td className="py-2 pr-4">{owner.email || "-"}</td>
+                      <td className="py-2 pr-4">{owner.parrot_name || "-"}</td>
+                      <td className="py-2 pr-4">{owner.species || "-"}</td>
+                      <td className="py-2 pr-4">{owner.age ?? "-"}</td>
+                      <td className="py-2 pr-4">{owner.environment || "-"}</td>
+                      <td className="py-2 pr-4">{owner.totalPresses}</td>
+                      <td className="py-2 pr-4">{owner.favoriteSound}</td>
                       <td className="py-2 pr-4">
-                        {owner.owner_name || "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.email || "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.parrot_name || "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.species || "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.age ?? "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.environment || "-"}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.totalPresses}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.favoriteSound}
-                      </td>
-
-                      <td className="py-2 pr-4">
-                        {owner.agreement_accepted
-                          ? "Accepted"
-                          : "Not accepted"}
+                        {owner.agreement_accepted ? "Accepted" : "Not accepted"}
                       </td>
                     </tr>
                   ))}
@@ -399,181 +373,250 @@ export default function Research() {
       {logs.length === 0 && (
         <Card>
           <CardContent className="pt-6 text-sm text-muted-foreground">
-            No button presses logged yet. Go to Device
-            Configuration and click a device button, or connect
-            the Arduino and press a real button.
+            No button presses logged yet. Only real device presses should appear here.
           </CardContent>
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
+      <div className="grid grid-cols-1 xl:grid-cols-[260px_1fr] gap-6 items-start">
+        <Card className="xl:sticky xl:top-4">
           <CardHeader>
-            <CardTitle className="text-base">
-              Top Sounds
-            </CardTitle>
+            <CardTitle className="text-base">Visible graphs</CardTitle>
           </CardHeader>
 
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart
-                data={topSongs}
-                layout="vertical"
-                margin={{ left: 80 }}
+          <CardContent className="space-y-3">
+            {chartOptions.map((option) => (
+              <label
+                key={option.id}
+                className="flex items-center gap-2 text-sm cursor-pointer"
               >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(214, 20%, 89%)"
-                />
-
-                <XAxis
-                  type="number"
-                  tick={{ fontSize: 12 }}
-                />
-
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  tick={{ fontSize: 12 }}
-                  width={75}
-                />
-
-                <Tooltip />
-
-                <Bar
-                  dataKey="plays"
-                  fill="hsl(201, 96%, 39%)"
-                  radius={[0, 4, 4, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Button Press Distribution
-            </CardTitle>
-          </CardHeader>
-
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie
-                  data={buttonDist}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={50}
-                  outerRadius={90}
-                  dataKey="value"
-                  label={({ name, percent }) =>
-                    `${name} ${(percent * 100).toFixed(0)}%`
+                <Checkbox
+                  checked={visibleCharts[option.id]}
+                  onCheckedChange={(checked) =>
+                    toggleChart(option.id, checked === true)
                   }
-                >
-                  {buttonDist.map((entry, i) => (
-                    <Cell key={i} fill={entry.color} />
-                  ))}
-                </Pie>
-
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+                />
+                {option.label}
+              </label>
+            ))}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Daily Button Presses
-            </CardTitle>
-          </CardHeader>
+        <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6 min-w-0">
+          {!hasVisibleCharts && (
+            <Card className="2xl:col-span-2">
+              <CardContent className="pt-6 text-sm text-muted-foreground">
+                No graphs selected. Tick a box on the left to show a graph.
+              </CardContent>
+            </Card>
+          )}
 
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={dailyPresses}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(214, 20%, 89%)"
-                />
+          {visibleCharts.topSounds && (
+            <Card className="min-w-0">
+              <CardHeader>
+                <CardTitle className="text-base">Top Sounds</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Shows which sound files were played most often after device button presses.
+                </p>
+              </CardHeader>
 
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 12 }}
-                />
+              <CardContent>
+                <ResponsiveContainer width="100%" height={320}>
+                  <BarChart
+                    data={topSongs}
+                    layout="vertical"
+                    margin={{ top: 10, right: 35, left: 95, bottom: 45 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 20%, 89%)" />
 
-                <YAxis tick={{ fontSize: 12 }} />
+                    <XAxis type="number" tick={{ fontSize: 12 }} allowDecimals={false}>
+                      <Label value="Number of plays" offset={-30} position="insideBottom" />
+                    </XAxis>
 
-                <Tooltip />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      tick={{ fontSize: 12 }}
+                      width={95}
+                    >
+                      <Label
+                        value="Sound file"
+                        angle={-90}
+                        position="insideLeft"
+                        style={{ textAnchor: "middle" }}
+                      />
+                    </YAxis>
 
-                <Area
-                  type="monotone"
-                  dataKey="presses"
-                  stroke="hsl(201, 96%, 39%)"
-                  fill="hsl(199, 92%, 61%)"
-                  fillOpacity={0.2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+                    <Tooltip />
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Time-of-Day Patterns
-            </CardTitle>
-          </CardHeader>
+                    <Bar
+                      dataKey="plays"
+                      name="Number of plays"
+                      fill="hsl(201, 96%, 39%)"
+                      radius={[0, 4, 4, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
 
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={hourlyPattern}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(214, 20%, 89%)"
-                />
+          {visibleCharts.buttonDistribution && (
+            <Card className="min-w-0">
+              <CardHeader>
+                <CardTitle className="text-base">Button Press Distribution</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Shows what percentage of all device presses came from each physical button.
+                </p>
+              </CardHeader>
 
-                <XAxis
-                  dataKey="hour"
-                  tick={{ fontSize: 12 }}
-                />
+              <CardContent>
+                <ResponsiveContainer width="100%" height={320}>
+                  <PieChart margin={{ top: 10, right: 20, bottom: 40, left: 20 }}>
+                    <Pie
+                      data={buttonDist}
+                      cx="50%"
+                      cy="45%"
+                      innerRadius={55}
+                      outerRadius={90}
+                      dataKey="value"
+                      nameKey="name"
+                      labelLine={false}
+                    >
+                      {buttonDist.map((entry, i) => (
+                        <Cell key={i} fill={entry.color} />
+                      ))}
+                    </Pie>
 
-                <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip
+                      formatter={(value, name) => [`${value} presses`, name]}
+                    />
 
-                <Tooltip />
+                    <Legend
+                      verticalAlign="bottom"
+                      align="center"
+                      formatter={(value) => {
+                        const item = buttonDist.find((b) => b.name === value);
+                        const percent =
+                          totalPresses > 0 && item
+                            ? ` (${Math.round((item.value / totalPresses) * 100)}%)`
+                            : "";
+                        return `${value}${percent}`;
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
 
-                <Bar
-                  dataKey="presses"
-                  fill="hsl(199, 92%, 61%)"
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+          {visibleCharts.dailyPresses && (
+            <Card className="min-w-0">
+              <CardHeader>
+                <CardTitle className="text-base">Daily Button Presses</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Shows how many device button presses happened on each day of the week.
+                </p>
+              </CardHeader>
+
+              <CardContent>
+                <ResponsiveContainer width="100%" height={320}>
+                  <AreaChart
+                    data={dailyPresses}
+                    margin={{ top: 10, right: 35, left: 20, bottom: 45 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 20%, 89%)" />
+
+                    <XAxis dataKey="date" tick={{ fontSize: 12 }}>
+                      <Label value="Day of week" offset={-30} position="insideBottom" />
+                    </XAxis>
+
+                    <YAxis tick={{ fontSize: 12 }} allowDecimals={false}>
+                      <Label
+                        value="Number of presses"
+                        angle={-90}
+                        position="insideLeft"
+                        style={{ textAnchor: "middle" }}
+                      />
+                    </YAxis>
+
+                    <Tooltip />
+
+                    <Area
+                      type="monotone"
+                      dataKey="presses"
+                      name="Number of presses"
+                      stroke="hsl(201, 96%, 39%)"
+                      fill="hsl(199, 92%, 61%)"
+                      fillOpacity={0.2}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {visibleCharts.timeOfDay && (
+            <Card className="min-w-0">
+              <CardHeader>
+                <CardTitle className="text-base">Time-of-Day Patterns</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Shows at which hours of the day the device was pressed most often.
+                </p>
+              </CardHeader>
+
+              <CardContent>
+                <ResponsiveContainer width="100%" height={320}>
+                  <BarChart
+                    data={hourlyPattern}
+                    margin={{ top: 10, right: 35, left: 20, bottom: 45 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(214, 20%, 89%)" />
+
+                    <XAxis dataKey="hour" tick={{ fontSize: 12 }}>
+                      <Label value="Hour of day" offset={-30} position="insideBottom" />
+                    </XAxis>
+
+                    <YAxis tick={{ fontSize: 12 }} allowDecimals={false}>
+                      <Label
+                        value="Number of presses"
+                        angle={-90}
+                        position="insideLeft"
+                        style={{ textAnchor: "middle" }}
+                      />
+                    </YAxis>
+
+                    <Tooltip />
+
+                    <Bar
+                      dataKey="presses"
+                      name="Number of presses"
+                      fill="hsl(199, 92%, 61%)"
+                      radius={[4, 4, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Recent Button Presses
-          </CardTitle>
+          <CardTitle className="text-base">Recent Button Presses</CardTitle>
         </CardHeader>
 
         <CardContent>
           {logs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No recent logs.
-            </p>
+            <p className="text-sm text-muted-foreground">No recent logs.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
                     <th className="py-2 pr-4">Time</th>
-                    <th className="py-2 pr-4">
-                      Owner email
-                    </th>
+                    <th className="py-2 pr-4">Owner email</th>
                     <th className="py-2 pr-4">Button</th>
                     <th className="py-2 pr-4">Sound</th>
                   </tr>
@@ -592,13 +635,9 @@ export default function Research() {
                           {formatDateTime(log.timestamp)}
                         </td>
 
-                        <td className="py-2 pr-4">
-                          {log.owner_email || "-"}
-                        </td>
+                        <td className="py-2 pr-4">{log.owner_email || "-"}</td>
 
-                        <td className="py-2 pr-4">
-                          Button {log.button}
-                        </td>
+                        <td className="py-2 pr-4">Button {log.button}</td>
 
                         <td className="py-2 pr-4">
                           {log.soundfile || "Unassigned"}
