@@ -4,6 +4,16 @@
       "name": "NEW.wav",
       "label": "this is a test to see if front-end uploading works",
       "duration_ms": 0
+    },
+    {
+      "name": "freesound_community-comedic-silence-90574.mp3",
+      "label": "akward silence",
+      "duration_ms": 6243
+    },
+    {
+      "name": "ball_shot.wav",
+      "label": "ball_shot",
+      "duration_ms": 534
     }
   ]
 }

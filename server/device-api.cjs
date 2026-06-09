@@ -4,13 +4,17 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const MOCK = path.join(ROOT, 'mock_device');
+
 const CONFIG_PATH = path.join(MOCK, 'config', 'button_map.json');
+const USER_CONFIGS_DIR = path.join(MOCK, 'config', 'users');
+
 const SOUND_INDEX_PATH = path.join(MOCK, 'metadata', 'sound_index');
 const LOG_PATH = path.join(MOCK, 'log', 'database.csv');
 const SOUNDS_DIR = path.join(MOCK, 'sounds');
 
 function ensureFiles() {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  fs.mkdirSync(USER_CONFIGS_DIR, { recursive: true });
   fs.mkdirSync(path.dirname(SOUND_INDEX_PATH), { recursive: true });
   fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
   fs.mkdirSync(SOUNDS_DIR, { recursive: true });
@@ -71,12 +75,66 @@ function readJsonBody(req) {
   });
 }
 
-function readConfig() {
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+function emptyConfig() {
+  return { 1: '', 2: '', 3: '', 4: '' };
 }
 
-function writeConfig(config) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+function cleanConfig(next = {}) {
+  const clean = {};
+
+  [1, 2, 3, 4].forEach(id => {
+    clean[id] = String(next[id] || '');
+  });
+
+  return clean;
+}
+
+function cleanOwnerEmail(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9@._-]/g, '_');
+}
+
+function ownerEmailFromRequest(url, body = {}) {
+  return cleanOwnerEmail(
+    body.owner_email ||
+    body.ownerEmail ||
+    url.searchParams.get('owner_email') ||
+    url.searchParams.get('ownerEmail') ||
+    url.searchParams.get('email') ||
+    ''
+  );
+}
+
+function configPathForOwner(ownerEmail = '') {
+  const cleanEmail = cleanOwnerEmail(ownerEmail);
+
+  if (!cleanEmail) {
+    return CONFIG_PATH;
+  }
+
+  return path.join(USER_CONFIGS_DIR, `${cleanEmail}.json`);
+}
+
+function readConfig(ownerEmail = '') {
+  const configPath = configPathForOwner(ownerEmail);
+
+  if (!fs.existsSync(configPath)) {
+    return emptyConfig();
+  }
+
+  try {
+    return cleanConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
+  } catch {
+    return emptyConfig();
+  }
+}
+
+function writeConfig(config, ownerEmail = '') {
+  const configPath = configPathForOwner(ownerEmail);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(cleanConfig(config), null, 2));
 }
 
 function readSoundIndex() {
@@ -134,21 +192,25 @@ function readLogs() {
     const parts = line.split(',').map(v => v.trim());
 
     if (hasOwnerEmail) {
-      const [timestamp, owner_email, button, soundfile] = parts;
+      const [timestamp, owner_email, button, soundfile, ms_since_last_sound] = parts;
+
       return {
         timestamp: normalizeTimestamp(timestamp),
         owner_email,
         button: Number(button),
         soundfile,
+        ms_since_last_sound: Number(ms_since_last_sound || 0),
       };
     }
 
     const [timestamp, button, soundfile] = parts;
+
     return {
       timestamp: normalizeTimestamp(timestamp),
       owner_email: '',
       button: Number(button),
       soundfile,
+      ms_since_last_sound: 0,
     };
   });
 }
@@ -216,25 +278,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/config') {
+      const ownerEmail = ownerEmailFromRequest(url);
+
       return send(res, 200, {
-        buttons: readConfig(),
+        owner_email: ownerEmail,
+        buttons: readConfig(ownerEmail),
         sounds: listSounds(),
       });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/config') {
       const body = await readJsonBody(req);
+      const ownerEmail = ownerEmailFromRequest(url, body);
       const next = body.buttons || body;
-      const clean = {};
+      const clean = cleanConfig(next);
 
-      [1, 2, 3, 4].forEach(id => {
-        clean[id] = String(next[id] || '');
-      });
-
-      writeConfig(clean);
+      writeConfig(clean, ownerEmail);
 
       return send(res, 200, {
         ok: true,
+        owner_email: ownerEmail,
         buttons: clean,
       });
     }
@@ -255,11 +318,8 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (
-      req.method === 'GET' && url.pathname === '/api/config/button_map.json') {
-      const raw = fs.readFileSync(
-        CONFIG_PATH
-      );
+    if (req.method === 'GET' && url.pathname === '/api/config/button_map.json') {
+      const raw = fs.readFileSync(CONFIG_PATH);
 
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -351,14 +411,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/log') {
-      const t0 = Date.now();
-      console.log("  └─ /api/log handler ENTER", t0);
+      const logStart = Date.now();
+      console.log("  └─ /api/log handler ENTER", logStart);
 
       const body = await readJsonBody(req);
 
       console.log("  └─ JSON parsed", Date.now());
 
-      const config = readConfig();
+      const ownerEmail = cleanOwnerEmail(body.owner_email || body.ownerEmail || '');
+      const config = readConfig(ownerEmail);
 
       const button = Number(body.button);
 
@@ -373,8 +434,6 @@ const server = http.createServer(async (req, res) => {
 
       console.log("  └─ BEFORE appendLog", Date.now());
 
-      const ownerEmail = String(body.owner_email || '');
-
       appendLog({
         button,
         soundfile,
@@ -385,24 +444,14 @@ const server = http.createServer(async (req, res) => {
 
       console.log("  └─ AFTER appendLog (CSV written)", Date.now());
 
-      const responsePayload = {
+      return send(res, 200, {
         ok: true,
         button,
         soundfile,
         timestamp,
         owner_email: ownerEmail,
         ms_since_last_sound: msSinceLastSound,
-      };
-
-      console.log("  └─ SENDING RESPONSE", Date.now());
-
-      res.setHeader('Connection', 'close');
-
-      res.end(JSON.stringify(responsePayload));
-
-      console.log("  └─ RESPONSE END CALLED", Date.now());
-
-      return;
+      });
     }
 
     return send(res, 404, { error: 'Not found' });

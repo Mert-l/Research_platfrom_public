@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Music, Upload, Play, Pause, X, Save, Wifi, Shuffle } from "lucide-react";
+import { Music, Upload, Play, Pause, X, Save, Shuffle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/lib/supabase";
 
 interface SoundFile {
   name: string;
@@ -47,6 +48,10 @@ const allowedAudioExtensions = [".mp3", ".wav"];
 
 function getSoundUrl(fileName: string) {
   return `${API_BASE}/api/sounds/${encodeURIComponent(fileName)}`;
+}
+
+function getCurrentOwnerEmail() {
+  return String(localStorage.getItem("parrot_owner_email") || "").trim().toLowerCase();
 }
 
 function shuffleArray<T>(items: T[]) {
@@ -103,9 +108,10 @@ export default function Device() {
   const [tempUploadDurationMs, setTempUploadDurationMs] = useState<number | null>(null);
   const [tempAudioUrl, setTempAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [apiOnline, setApiOnline] = useState(false);
+  const [activePreviewButtonId, setActivePreviewButtonId] = useState<number | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -117,38 +123,70 @@ export default function Device() {
     return map;
   }, [sounds]);
 
-  const refreshConfig = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/config`);
-      if (!res.ok) throw new Error("API server is not responding");
+  const buildButtonsFromConfig = (config: Record<string, string>, labels: Map<string, string>) => {
+    return [1, 2, 3, 4].map((id) => {
+      const soundFile = config[String(id)] || "";
+      return {
+        id,
+        color: buttonColors[id],
+        label: String(id),
+        songName: labels.get(soundFile) || soundFile.replace(/\.[^.]+$/, ""),
+        soundFile,
+        audioUrl: soundFile ? getSoundUrl(soundFile) : null,
+      };
+    });
+  };
 
-      const data = await res.json();
-      const loadedSounds = data.sounds || [];
-      const config = data.buttons || {};
+  const loadSounds = async () => {
+    const res = await fetch(`${API_BASE}/api/sounds`);
+    if (!res.ok) throw new Error("Could not load sounds");
+
+    const data = await res.json();
+    return data.sounds || [];
+  };
+
+  const loadUserConfig = async (ownerEmail: string) => {
+    const { data, error } = await supabase
+      .from("device_configs")
+      .select("buttons")
+      .eq("owner_email", ownerEmail)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    return data?.buttons || { "1": "", "2": "", "3": "", "4": "" };
+  };
+
+  const refreshConfig = async () => {
+    const ownerEmail = getCurrentOwnerEmail();
+
+    if (!ownerEmail) {
+      toast({
+        title: "No owner profile",
+        description: "Please save an owner profile first so the button setup can be saved separately.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const loadedSounds = await loadSounds();
 
       const loadedSoundLabel = new Map<string, string>();
       loadedSounds.forEach((s: SoundFile) => {
         loadedSoundLabel.set(s.name, s.label || s.name.replace(/\.[^.]+$/, ""));
       });
 
-      setApiOnline(true);
-      setSounds(loadedSounds);
+      const config = await loadUserConfig(ownerEmail);
 
-      setButtons(
-        [1, 2, 3, 4].map((id) => {
-          const soundFile = config[id] || "";
-          return {
-            id,
-            color: buttonColors[id],
-            label: String(id),
-            songName: loadedSoundLabel.get(soundFile) || soundFile.replace(/\.[^.]+$/, ""),
-            soundFile,
-            audioUrl: soundFile ? getSoundUrl(soundFile) : null,
-          };
-        })
-      );
-    } catch {
-      setApiOnline(false);
+      setSounds(loadedSounds);
+      setButtons(buildButtonsFromConfig(config, loadedSoundLabel));
+    } catch (error) {
+      toast({
+        title: "Could not load device config",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
     }
   };
 
@@ -233,18 +271,24 @@ export default function Device() {
     setIsPlaying(!isPlaying);
   };
 
-  const saveMappingToApi = async (nextButtons: ButtonConfig[]) => {
+  const saveMappingToSupabase = async (nextButtons: ButtonConfig[]) => {
+    const ownerEmail = getCurrentOwnerEmail();
+
+    if (!ownerEmail) {
+      throw new Error("No owner email found. Please save an owner profile first.");
+    }
+
     const payload = {
+      owner_email: ownerEmail,
       buttons: Object.fromEntries(nextButtons.map((b) => [String(b.id), b.soundFile])),
+      updated_at: new Date().toISOString(),
     };
 
-    const res = await fetch(`${API_BASE}/api/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const { error } = await supabase
+      .from("device_configs")
+      .upsert(payload, { onConflict: "owner_email" });
 
-    if (!res.ok) throw new Error("Could not save config to API");
+    if (error) throw error;
   };
 
   const handleShuffleButtonSounds = async () => {
@@ -300,12 +344,12 @@ export default function Device() {
         };
       });
 
-      await saveMappingToApi(nextButtons);
+      await saveMappingToSupabase(nextButtons);
       setButtons(nextButtons);
 
       toast({
         title: "Sounds shuffled",
-        description: "The 4 existing sounds were randomly reassigned with no duplicates.",
+        description: "Your button sounds were shuffled and saved to your profile.",
       });
     } catch (error) {
       toast({
@@ -355,7 +399,7 @@ export default function Device() {
           : b
       );
 
-      await saveMappingToApi(nextButtons);
+      await saveMappingToSupabase(nextButtons);
       setButtons(nextButtons);
       setSheetOpen(false);
       await refreshConfig();
@@ -373,14 +417,50 @@ export default function Device() {
     }
   };
 
-  const previewButtonSound = (button: ButtonConfig) => {
-    if (button.audioUrl) {
-      new Audio(button.audioUrl).play();
+  const stopButtonPreview = () => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.currentTime = 0;
+      previewAudioRef.current = null;
     }
 
-    toast({
-      title: "Sound preview",
-      description: `Previewing Button ${button.id}: ${button.soundFile || "no sound assigned"}`,
+    setActivePreviewButtonId(null);
+  };
+
+  const previewButtonSound = (button: ButtonConfig) => {
+    if (!button.audioUrl) {
+      toast({
+        title: "No sound assigned",
+        description: `Button ${button.id} does not have a sound yet.`,
+      });
+      return;
+    }
+
+    if (activePreviewButtonId === button.id && previewAudioRef.current) {
+      stopButtonPreview();
+      return;
+    }
+
+    stopButtonPreview();
+
+    const audio = new Audio(button.audioUrl);
+    previewAudioRef.current = audio;
+    setActivePreviewButtonId(button.id);
+
+    audio.onended = () => {
+      previewAudioRef.current = null;
+      setActivePreviewButtonId(null);
+    };
+
+    audio.play().catch((error) => {
+      previewAudioRef.current = null;
+      setActivePreviewButtonId(null);
+
+      toast({
+        title: "Preview failed",
+        description: error instanceof Error ? error.message : "Could not play this sound.",
+        variant: "destructive",
+      });
     });
   };
 
@@ -389,24 +469,15 @@ export default function Device() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Device Configuration</h1>
-          <p className="text-muted-foreground mt-1">Assign sounds to each physical button and preview playback.</p>
+          <p className="text-muted-foreground mt-1">
+            Assign sounds to each button. Each owner&apos;s setup is saved separately.
+          </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleShuffleButtonSounds}>
-            <Shuffle className="h-4 w-4 mr-2" />
-            Shuffle sounds
-          </Button>
-
-          {/* <div
-            className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${
-              apiOnline ? "text-green-700" : "text-destructive"
-            }`}
-          >
-            <Wifi className="h-3 w-3" />
-            {apiOnline ? "API online" : "API offline"}
-          </div> */}
-        </div>
+        <Button variant="outline" size="sm" onClick={handleShuffleButtonSounds}>
+          <Shuffle className="h-4 w-4 mr-2" />
+          Shuffle sounds
+        </Button>
       </div>
 
       <Card>
@@ -417,9 +488,9 @@ export default function Device() {
         <CardContent>
           <div className="flex justify-center">
             <div className="relative bg-muted border-2 border-border rounded-2xl w-72 h-80 flex flex-col items-center justify-center gap-4 p-6 shadow-sm">
-              <div className={`absolute top-4 right-4 w-2 h-2 rounded-full ${apiOnline ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-
-              <span className="absolute top-4 left-4 text-[10px] font-medium text-muted-foreground tracking-widest uppercase">Parrot Device</span>
+              <span className="absolute top-4 left-4 text-[10px] font-medium text-muted-foreground tracking-widest uppercase">
+                Parrot Device
+              </span>
 
               <div className="grid grid-cols-2 gap-4 mt-4">
                 {buttons.map((btn) => (
@@ -427,13 +498,18 @@ export default function Device() {
                     key={btn.id}
                     onClick={() => previewButtonSound(btn)}
                     onDoubleClick={() => openConfig(btn)}
-                    title="Click to preview sound. Double-click to configure."
+                    title="Click to preview sound. Click again to stop. Double-click to configure."
                     className="w-24 h-24 rounded-xl border-2 border-border transition-all duration-150 hover:scale-105 hover:shadow-md flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95"
-                    style={{ backgroundColor: btn.color }}
+                    style={{
+                      backgroundColor: btn.color,
+                      outline: activePreviewButtonId === btn.id ? "3px solid hsl(45, 100%, 60%)" : "none",
+                    }}
                   >
                     <Music className="h-5 w-5 text-white/90" />
                     <span className="text-[10px] text-white/80 font-medium">Button {btn.id}</span>
-                    <span className="text-[9px] text-white/70 px-1 truncate max-w-20">{btn.songName || "empty"}</span>
+                    <span className="text-[9px] text-white/70 px-1 truncate max-w-20">
+                      {activePreviewButtonId === btn.id ? "playing..." : btn.songName || "empty"}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -447,7 +523,7 @@ export default function Device() {
           </div>
 
           <p className="mt-4 text-center text-xs text-muted-foreground">
-            Click a button to preview playback. Double-click a button to assign a sound.
+            Click a button to preview playback. Click the same button again to stop. Double-click a button to assign a sound.
           </p>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
@@ -469,14 +545,22 @@ export default function Device() {
         <SheetContent className="overflow-y-auto max-h-screen">
           <SheetHeader>
             <SheetTitle>Configure Button {selectedButton?.id}</SheetTitle>
-            <SheetDescription>Choose an existing sound or upload a new WAV/MP3 file. Files must be maximum 2 minutes.</SheetDescription>
+            <SheetDescription>
+              Choose an existing sound or upload a new WAV/MP3 file. Files must be maximum 2 minutes.
+            </SheetDescription>
           </SheetHeader>
 
           <div className="space-y-6 mt-6 pb-8">
             <div className="space-y-2">
               <Label>Sound description / label</Label>
-              <Input value={tempSongName} onChange={(e) => setTempSongName(e.target.value)} placeholder="Example: calm piano, short bell, bird chirping..." />
-              <p className="text-xs text-muted-foreground">This description will be saved in metadata and shown in the dashboard.</p>
+              <Input
+                value={tempSongName}
+                onChange={(e) => setTempSongName(e.target.value)}
+                placeholder="Example: calm piano, short bell, bird chirping..."
+              />
+              <p className="text-xs text-muted-foreground">
+                This description will be saved in metadata and shown in the dashboard.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -497,7 +581,13 @@ export default function Device() {
 
             <div className="space-y-2">
               <Label>Or upload new audio</Label>
-              <input ref={fileInputRef} type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" className="hidden" onChange={handleFileChange} />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".mp3,.wav,audio/mpeg,audio/wav"
+                className="hidden"
+                onChange={handleFileChange}
+              />
 
               <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
                 {tempUploadFile ? (
@@ -532,14 +622,16 @@ export default function Device() {
                     {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                   </Button>
                   <audio ref={audioRef} src={tempAudioUrl} onEnded={() => setIsPlaying(false)} />
-                  <span className="text-sm text-muted-foreground truncate">{tempSongName || tempSoundFile || "Untitled"}</span>
+                  <span className="text-sm text-muted-foreground truncate">
+                    {tempSongName || tempSoundFile || "Untitled"}
+                  </span>
                 </div>
               </div>
             )}
 
             <Button className="w-full" onClick={handleSave} disabled={!tempSoundFile && !tempUploadFile}>
               <Save className="h-4 w-4 mr-2" />
-              Save to device config
+              Save to my device config
             </Button>
           </div>
         </SheetContent>
