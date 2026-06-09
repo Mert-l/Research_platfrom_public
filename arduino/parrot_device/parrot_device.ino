@@ -119,7 +119,9 @@ int lastStates[numSwitches];
 int baselineStates[numSwitches];
 
 
-// ================================= SD / AUDIO =================================
+// ================================= SD / AUDIO =================================/*
+// Attempts to mount the SD card using multiple MOSI/MISO pin configurations.
+// Returns true if a valid SD card is successfully mounted.
 static bool mountSD() {
   for (int i = 0; i < NUM_ORDERS; i++) {
     Serial.printf("Mounting SD (%s) ... ", PIN_ORDERS[i].label);
@@ -134,11 +136,16 @@ static bool mountSD() {
   return false;
 }
 
+
+// Checks whether a given file path has an audio extension (.mp3 or .wav).
+// Returns true if file is playable audio.
 static bool isAudio(const String &p) {
   String low = p; low.toLowerCase();
   return low.endsWith(".mp3") || low.endsWith(".wav");
 }
 
+// Recursively scans a directory on the SD card and collects all audio files
+// into the global `files[]` array up to MAX_FILES.
 static void scan(File dir) {
   File e = dir.openNextFile();
   while (e && fileCount < MAX_FILES) {
@@ -151,6 +158,8 @@ static void scan(File dir) {
   }
 }
 
+// Stops any currently playing audio and frees all audio-related objects.
+// Resets playback state.
 static void stopPlay() {
   if (mp3) { mp3->stop(); delete mp3; mp3 = nullptr; }
   if (wav) { wav->stop(); delete wav; wav = nullptr; }
@@ -159,7 +168,9 @@ static void stopPlay() {
   playing = false;
 }
 
-// Play any file by full SD path. Returns true if playback started.
+// Play any file by full SD path.
+// Supports MP3 and WAV formats.
+// Returns true if playback successfully starts.
 static bool startPlayPath(const String &path) {
   stopPlay();
   if (!SD.exists(path)) { Serial.printf("  missing %s\n", path.c_str()); return false; }
@@ -192,6 +203,8 @@ static bool startPlayPath(const String &path) {
   return true;
 }
 
+// Continuously feeds audio data to the decoder while playback is active.
+// Detects when playback finishes and resets system state.
 static void pumpAudio() {
   if (!playing) return;
   bool running = false;
@@ -203,6 +216,8 @@ static void pumpAudio() {
 
 }
 
+// Generates a test tone (440 Hz) directly via I2S output for 1.5 seconds.
+// Used for debugging audio hardware.
 static void testTone() {
   Serial.println(F("Test tone: 440 Hz for 1.5 s ..."));
   AudioOutputI2S *o = new AudioOutputI2S();
@@ -219,8 +234,8 @@ static void testTone() {
   Serial.println(F("Test tone done."));
 }
 
-// to avoid triggering sounds when a sound is currently already playing
-// this updates the switch states, gets called in PumpAudio.
+// Captures current GPIO switch states and sets them as the new baseline.
+// Prevents false triggers while audio is playing.
 static void captureCurrentSwitchStates() {
   for (int i = 0; i < numSwitches; i++) {
     lastStates[i] = digitalRead(switchPins[i]);
@@ -235,7 +250,9 @@ static void captureCurrentSwitchStates() {
 }
 
 
-// runs in loop, plays sound when switched state is detected.
+// Checks all physical switches and detects state changes.
+// If a change is detected, triggers the corresponding button press.
+// Disabled while WiFi mode or audio playback is active.
 static void checkSwitches() {
 
   if (wifiMode) return;
@@ -266,6 +283,8 @@ static void checkSwitches() {
   }
 }
 // ================================ TIME / WIFI =================================
+
+// Returns current system time formatted as ISO-8601 UTC string.
 static String getTimestamp() {
   time_t now = time(nullptr);
   struct tm t;
@@ -275,6 +294,8 @@ static String getTimestamp() {
   return String(buf);
 }
 
+// Synchronizes device time using NTP (pool.ntp.org).
+// Waits until a valid epoch time is received.
 static void syncClock() {
   Serial.println(F("Syncing time via NTP..."));
   configTime(0, 0, "pool.ntp.org");
@@ -284,37 +305,51 @@ static void syncClock() {
   Serial.print(F("Synced time: ")); Serial.println(getTimestamp());
 }
 
+
+// Connects to WiFi using WiFiManager.
+// First tries saved credentials for 60 seconds.
+// If unsuccessful, opens configuration portal.
 static void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.println(F("\n========== WIFI START =========="));
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  wm.setConfigPortalTimeout(0);                  // portal never times out
+  wm.setConnectTimeout(60);
+  wm.setConfigPortalTimeout(0);
   bool connected = wm.autoConnect("Parrot-device-Setup");
   if (!connected) {
-    Serial.println(F("Failed; starting config portal..."));
-    WiFi.disconnect(true); delay(1000);
+    Serial.println(F("Saved WiFi failed after timeout; starting config portal..."));
+    WiFi.disconnect(true);
+    delay(1000);
+
     if (!wm.startConfigPortal("Parrot-device-Setup")) {
-      Serial.println(F("Portal failed; restarting.")); delay(3000); ESP.restart();
+      Serial.println(F("Portal failed; restarting."));
+      delay(3000);
+      ESP.restart();
     }
   }
-  Serial.print(F("WiFi connected! IP: ")); Serial.println(WiFi.localIP());
-  // https mode
+  Serial.print(F("WiFi connected! IP: "));
+  Serial.println(WiFi.localIP());
   secureClient.setInsecure();
   syncClock();
 }
 
 // ================================= SERVER CONNECTION ================================
 
+// Builds a full API URL from a relative path.
 static String apiUrl(const String &path) {
   return String(BASE_URL) + path;
 }
 
+
+// Ensures required SD directories (/config and /sounds) exist.
 static void ensureDirectories() {
   if (!SD.exists("/config")) SD.mkdir("/config");
   if (!SD.exists("/sounds")) SD.mkdir("/sounds");
 }
 
+// Downloads a file over HTTPS and writes it to SD card.
+// Streams data in chunks to avoid memory overflow.
 static bool downloadFile(const String &url, const String &localPath) {
   HTTPClient http;
   http.begin(secureClient, url);
@@ -336,7 +371,8 @@ static bool downloadFile(const String &url, const String &localPath) {
   return got > 0;
 }
 
-// Config files use a safe .tmp-then-rename swap, sounds download directly.
+// Downloads a file from server and safely replaces local file.
+// Config files use atomic .tmp rename to prevent corruption.
 static bool replaceFileFromServer(const String &remoteUrl, const String &localPath) {
   if (localPath.startsWith("/config/")) {
     String tmp = localPath + ".tmp";
@@ -350,6 +386,7 @@ static bool replaceFileFromServer(const String &remoteUrl, const String &localPa
   return downloadFile(remoteUrl, localPath);
 }
 
+// Downloads and updates button mapping configuration from server.
 static void syncConfig() {
   if (replaceFileFromServer(apiUrl("/api/config/button_map.json"), "/config/button_map.json"))
     Serial.println(F("Config synced"));
@@ -357,6 +394,7 @@ static void syncConfig() {
     Serial.println(F("Config sync failed - keeping old"));
 }
 
+// Fetches list of available sounds from server and downloads missing files.
 static void syncSounds() {
   HTTPClient http;
   http.begin(secureClient, apiUrl("/api/sounds"));
@@ -381,6 +419,12 @@ static void syncSounds() {
   Serial.println(F("Sound sync complete"));
 }
 
+
+// Performs full server sync:
+// - ensures WiFi connection
+// - syncs config
+// - syncs sounds
+// - refreshes SD file index
 static void syncServerFiles() {
   if (WiFi.status() != WL_CONNECTED) connectWiFi();
   ensureDirectories();
@@ -392,6 +436,8 @@ static void syncServerFiles() {
 }
 
 // =========================== BUTTON TO SOUND MAPPING ==========================
+// Reads button_map.json and returns mapped filename for a button number.
+// Returns empty string if no mapping exists.
 static String getMappedFile(int buttonNumber) {
   File f = SD.open("/config/button_map.json");
   if (!f) return "";
@@ -406,6 +452,8 @@ static String getMappedFile(int buttonNumber) {
   return json.substring(start + 1, end);
 }
 
+// Adds a button press event to local SD log file and RAM queue.
+// Stores timing delta between presses.
 static void queuePressLog(int buttonNumber, const String &fileName) {
   if (queueCount >= MAX_QUEUE) return;
   unsigned long nowMs = millis();
@@ -424,6 +472,8 @@ static void queuePressLog(int buttonNumber, const String &fileName) {
   logQueue[queueCount++] = { buttonNumber, fileName, ts, delta };
 }
 
+// Uploads all queued button press logs to the server.
+// Clears queue after successful transmission.
 static void flushQueue() {
   if (queueCount == 0) return;
   Serial.printf("Uploading %d log entries...\n", queueCount);
@@ -450,6 +500,12 @@ static void flushQueue() {
 }
 
 // =========================== ENTER / EXIT WIFI MODE ===========================
+
+// Enters WiFi/sync mode:
+// - stops audio
+// - connects WiFi
+// - uploads logs
+// - syncs server data
 static void enterWifiMode() {
   Serial.println(F("\n--- WiFi/SYNC mode ON (audio suppressed) ---"));
   stopPlay();
@@ -459,13 +515,15 @@ static void enterWifiMode() {
   lastSyncMs = millis();
 }
 
+// Exits WiFi/sync mode and disables WiFi radio.
+
 static void exitWifiMode() {
   Serial.println(F("--- WiFi/SYNC mode OFF (play mode) ---"));
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
 
-// Switch into/out of sync mode, running the proper entry/exit work once.
+// Toggles WiFi mode on/off and runs enter/exit logic.
 static void setWifiMode(bool on) {
   if (on == wifiMode) return;
   wifiMode = on;
@@ -484,7 +542,10 @@ static String resolveSound(const String &fileName) {
   return "";
 }
 
-// A button press: look up its mapped sound, log it, and play it.
+// Handles a button press:
+// - resolves mapped sound
+// - plays audio
+// - logs event if playback succeeds
 static void pressButton(int buttonNumber) {
   if (wifiMode) { Serial.println(F("(in sync mode - press 'w' to return to play mode)")); return; }
 
@@ -514,6 +575,8 @@ static void pressButton(int buttonNumber) {
   queuePressLog(buttonNumber, fileName);
 }
 
+// Handles serial input commands (0-9, w, s, l, t, +, -, r).
+// Used for testing without physical hardware.
 static void handleKey(int c) {
   if (c >= '0' && c <= '9') { pressButton(c - '0'); return; }
   switch (c) {
@@ -523,11 +586,21 @@ static void handleKey(int c) {
     case 't': case 'T': stopPlay(); testTone(); break;
     case '+': gain = min(1.0f, gain + 0.1f); if (out) out->SetGain(gain); Serial.printf("Volume %.1f\n", gain); break;
     case '-': gain = max(0.0f, gain - 0.1f); if (out) out->SetGain(gain); Serial.printf("Volume %.1f\n", gain); break;
+    case 'r':
+    case 'R':
+      Serial.println("Resetting WiFi settings...");
+      wm.resetSettings();
+      WiFi.disconnect(true, true);
+      delay(1000);
+      ESP.restart();
+      break;
     default: break;
   }
 }
 
 // ================================= PRINT MENU =================================
+// Prints a diagnostic menu showing button mappings and system status.
+
 static void printMenu() {
   Serial.println(F("\n===== Parrot device ====="));
   Serial.println(F("  Audio files buttons are mapped to in button_map.json:"));
@@ -542,7 +615,7 @@ static void printMenu() {
   }
   //Serial.printf("  %d audio file(s) on SD.\n", fileCount);
   //for (int i = 0; i < fileCount; i++) Serial.printf("  [%d] %s\n", i, files[i].c_str());
-  Serial.println(F("  keys: 0-9 press | w wifi/sync | s stop | l list | t tone | +/- volume"));
+  Serial.println(F("  keys: 0-9 press | w wifi/sync | s stop | r reset wifi | l list | t tone | +/- volume"));
   // this is changed depending on switch type. may not be correct as printed. 
   Serial.println(F("  (or short D2 -> 3.3V to enter WiFi/sync mode)"));
   Serial.printf("  WiFi/sync mode: %s\n", wifiMode ? "ON" : "OFF");
@@ -550,6 +623,8 @@ static void printMenu() {
 }
 
 // ==================================== MAIN ====================================
+// Arduino setup function:
+// Initializes serial, switches, SD card, file scan, and WiFi client.
 void setup() {
   Serial.begin(115200);
   delay(1500);
@@ -580,13 +655,18 @@ void setup() {
   secureClient.setInsecure();
   Serial.println(F("Ready. Press 0-9 to trigger a sound."));
 }
+
+// Main execution loop:
+// - processes serial input
+// - checks switches
+// - handles WiFi mode switching
+// - runs audio playback or sync tasks
 void loop() {
   while (Serial.available()) handleKey(Serial.read());
 
   // check switches that play sound
   checkSwitches();
 
-  // ===================== WIFI SWITCH (D2 → GND, ACTIVE LOW) =====================
   static int lastState = HIGH;
   static unsigned long lastChangeMs = 0;
   const unsigned long debounceMs = 80;

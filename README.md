@@ -1,155 +1,76 @@
-# Parrot Device Dashboard
+# 🦜 Parrot Audio Device System
 
-React dashboard + local API for the Arduino Nano ESP32 parrot music-preference research device.
-
-The system has 3 parts:
-
-1. Web app: assign sounds to buttons and view research analytics.
-2. Local API: stores button mappings, sound files, and button-press logs in `mock_device/`.
-3. Arduino Nano ESP32: reads 4 physical buttons, plays audio, and posts press logs to the API.
-
-The app can be accessed here: [Open the app](https://parrots-public.vercel.app/)
+## Overview
+System connecting a React frontend, Node.js API, and ESP32 audio device with SD storage and WiFi sync.
 
 ---
 
-## Requirements
+## Frontend
+https://parrots-public.vercel.app/
 
-- Node.js v20 or higher
-- npm
-- Arduino IDE
-- Arduino libraries:
-  - `DFRobotDFPlayerMini`
-
----
-
-## Install
-
-```bash
-npm install
-```
+- Assign sounds to buttons
+- Upload and manage audio
+- Sends API requests to backend
 
 ---
 
-## Run the local API
+## Backend (Node.js API)
 
-Open terminal 1:
+Manages config, sounds, and logs.
 
-```bash
-npm run dev:api
-```
-
-This starts:
-
-```text
-http://localhost:3001
-```
-
----
-
-## Run the web app
-
-Open terminal 2:
-
-```bash
-npm run dev
-```
-
-Then open:
-
-```text
-http://localhost:8080
-```
+### Endpoints
+- `GET /api/config`
+- `POST /api/config`
+- `GET /api/sounds`
+- `POST /api/sounds`
+- `GET /api/device-config`
+- `GET /api/logs`
+- `POST /api/log`
 
 ---
 
-## How the data works
+## Device (ESP32 Parrot Player)
 
-Button assignments are saved here:
+- Plays MP3/WAV from SD card
+- Uses `/config/button_map.json`
+- Logs presses to `/queue.csv`
+- Syncs config + sounds over WiFi
+- Uploads logs to server
+- Offline playback supported
 
-```text
-mock_device/config/button_map.json
-```
-
-Button press logs are saved here:
-
-```text
-mock_device/log/database.csv
-```
-
-Sound files are stored here:
-
-```text
-mock_device/sounds/
-```
+### Hardware
+- SD card (audio + config)
+- MAX98357A I2S audio
+- ESP32 WiFi + NTP sync
+- Button/switch inputs
 
 ---
 
-## API endpoints
-
+## Architecture
 ```text
-GET  /api/config
-POST /api/config
-GET  /api/sounds
-POST /api/sounds
-GET  /api/logs
-POST /api/log
+React (Vercel)
+   ↓ HTTP
+Node.js API
+   ↓ HTTPS sync
+ESP32 Device
+ ├─ SD card (sounds/config)
+ ├─ Audio output (I2S)
+ ├─ WiFi sync mode
+
 ```
-
-Arduino sends button presses to:
-
+## Repository Map 
 ```text
-POST http://YOUR_LAPTOP_IP:3001/api/log
+
+├── arduino/
+│   └── parrot_device/
+│       └── (ESP32 Arduino firmware code)
+
+├── mock_device/
+│   └── (local simulation of device storage + logs + sounds)
+
+├── server/
+│   └── (Node.js backend API: config, sounds, logs, sync)
+
+├── src/
+│   └── (React frontend source code) 
 ```
-
-Example JSON:
-
-```json
-{
-  "button": 1,
-  "soundfile": "sound1.wav"
-}
-```
-
----
-
-## Arduino setup
-
-The Arduino sketch is here:
-
-```text
-arduino/parrot_device/parrot_device.ino
-```
-
-Important: the Arduino cannot use `localhost`. In the sketch, change:
-
-```cpp
-const char* API_HOST = "192.168.1.23";
-```
-
-to your laptop's local WiFi IP address.
-
-On Windows, you can find it with:
-
-```bash
-ipconfig
-```
-
-Look for your WiFi IPv4 address.
-
----
-
-## Audio playback hardware note
-
-The sketch assumes a DFPlayer Mini audio module with a microSD card.
-Put audio files on the DFPlayer microSD card as:
-
-```text
-/mp3/0001.mp3
-/mp3/0002.mp3
-/mp3/0003.mp3
-/mp3/0004.mp3
-```
-
-Button 1 plays track 1, button 2 plays track 2, etc.
-
-The web app stores the research mapping and logs. The physical audio playback happens on the DFPlayer module.
