@@ -441,10 +441,43 @@ static bool replaceFileFromServer(const String &remoteUrl, const String &localPa
 
 // Downloads and updates button mapping configuration from server.
 static void syncConfig() {
-  if (replaceFileFromServer(apiUrl("/api/config/button_map.json"), "/config/button_map.json"))
-    Serial.println(F("Config synced"));
-  else
-    Serial.println(F("Config sync failed - keeping old"));
+  if (ownerEmail.length() == 0) {
+    Serial.println(F("No ownerEmail → skipping config sync"));
+    return;
+  }
+  String url = apiUrl("/api/config?owner_email=" + ownerEmail);
+  HTTPClient http;
+  http.begin(secureClient, url);
+  http.addHeader("Connection", "close");
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("Config fetch failed: %d\n", code);
+    http.end();
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+  // Extract only the "buttons" object from JSON
+  int key = payload.indexOf("\"buttons\":");
+  if (key == -1) {
+    Serial.println(F("Malformed config response"));
+    return;
+  }
+  int objStart = payload.indexOf("{", key);
+  int objEnd   = payload.indexOf("}", objStart);
+  if (objStart == -1 || objEnd == -1) {
+    Serial.println(F("Failed to parse buttons object"));
+    return;
+  }
+  String buttonsJson = payload.substring(objStart, objEnd + 1);
+  File f = SD.open("/config/button_map.json", FILE_WRITE);
+  if (!f) {
+    Serial.println(F("Failed to write config file"));
+    return;
+  }
+  f.print(buttonsJson);
+  f.close();
+  Serial.println(F("Owner config synced"));
 }
 
 // Fetches list of available sounds from server and downloads missing files.
@@ -471,7 +504,6 @@ static void syncSounds() {
   }
   Serial.println(F("Sound sync complete"));
 }
-
 
 // Performs full server sync:
 // - ensures WiFi connection
