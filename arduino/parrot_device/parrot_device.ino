@@ -103,13 +103,13 @@ bool wifiMode = false;
 unsigned long lastSyncMs = 0;
 const unsigned long SYNC_INTERVAL_MS = 10000;
 
+// owner identity email
+static String ownerEmail = "";
+
 // Press logging
 const char *QUEUE_FILE = "/queue.csv";
 unsigned long lastSoundMs = 0;
-struct PressLog { int button; String soundFile; String timestamp; unsigned long gap; };
-static const int MAX_QUEUE = 200;
-PressLog logQueue[MAX_QUEUE];
-int queueCount = 0;
+
 
 // switch definitions 
 const int switchPins[] = {D3, D4, D5, D6};
@@ -314,6 +314,14 @@ static void connectWiFi() {
   Serial.println(F("\n========== WIFI START =========="));
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  // custom portal field for owner
+  WiFiManagerParameter custom_email(
+    "email",
+    "Owner Email",
+    ownerEmail.c_str(),
+    64
+  );
+  wm.addParameter(&custom_email);
   wm.setConnectTimeout(60);
   wm.setConfigPortalTimeout(0);
   bool connected = wm.autoConnect("Parrot-device-Setup");
@@ -328,10 +336,55 @@ static void connectWiFi() {
       ESP.restart();
     }
   }
-  Serial.print(F("WiFi connected! IP: "));
+  Serial.println(F("WiFi connected!"));
+  Serial.print(F("IP: "));
   Serial.println(WiFi.localIP());
+
+  // retrieve owner email from portal
+  ownerEmail = String(custom_email.getValue());
+  ownerEmail.trim();
+  if (ownerEmail.length() == 0) {
+    Serial.println(F("WARNING: No owner email entered"));
+  } else {
+    Serial.print(F("Owner email: "));
+    Serial.println(ownerEmail);
+    // save owner email to SD
+    File f = SD.open("/config/device.json", FILE_WRITE);
+    if (f) {
+      f.print("{\"owner_email\":\"");
+      f.print(ownerEmail);
+      f.print("\"}");
+      f.close();
+
+      Serial.println(F("Owner email saved to SD"));
+    } else {
+      Serial.println(F("ERROR: Failed to save owner email"));
+    }
+  }
   secureClient.setInsecure();
   syncClock();
+}
+
+// load and read config/device.json which contains the owner email.
+static void loadOwnerEmail() {
+  if (!SD.exists("/config/device.json")) return;
+
+  File f = SD.open("/config/device.json", FILE_READ);
+  if (!f) return;
+
+  String json = f.readString();
+  f.close();
+
+  int key = json.indexOf("owner_email");
+  if (key == -1) return;
+
+  int start = json.indexOf("\"", key + 12);
+  int end = json.indexOf("\"", start + 1);
+
+  if (start != -1 && end != -1) {
+    ownerEmail = json.substring(start + 1, end);
+    Serial.println("Loaded ownerEmail: " + ownerEmail);
+  }
 }
 
 // ================================= SERVER CONNECTION ================================
@@ -455,12 +508,10 @@ static String getMappedFile(int buttonNumber) {
 // Adds a button press event to local SD log file and RAM queue.
 // Stores timing delta between presses.
 static void queuePressLog(int buttonNumber, const String &fileName) {
-  if (queueCount >= MAX_QUEUE) return;
   unsigned long nowMs = millis();
   unsigned long delta = (lastSoundMs == 0) ? 0 : nowMs - lastSoundMs;
   lastSoundMs = nowMs;
   String ts = getTimestamp();
-
   File f = SD.open(QUEUE_FILE, FILE_APPEND);
   if (f) {
     f.print(buttonNumber); f.print(",");
@@ -469,35 +520,110 @@ static void queuePressLog(int buttonNumber, const String &fileName) {
     f.println(delta);
     f.close();
   }
-  logQueue[queueCount++] = { buttonNumber, fileName, ts, delta };
 }
 
 // Uploads all queued button press logs to the server.
-// Clears queue after successful transmission.
+// Clears queue.csv after successful transmission.
 static void flushQueue() {
-  if (queueCount == 0) return;
-  Serial.printf("Uploading %d log entries...\n", queueCount);
-  for (int i = 0; i < queueCount; i++) {
-    if (WiFi.status() != WL_CONNECTED) break;
+  // load queue.csv
+  if (!SD.exists(QUEUE_FILE)) {
+    Serial.println(F("Queue file does not exist."));
+    return;
+  }
+
+  File f = SD.open(QUEUE_FILE, FILE_READ);
+  if (!f) {
+    Serial.println(F("Failed to open queue file."));
+    return;
+  }
+  Serial.println(F("Uploading queued entries..."));
+
+  bool allSucceeded = true;
+  int uploadedCount = 0;
+
+  while (f.available()) {
+    // read queue.csv
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {
+      continue;
+    }
+    int p1 = line.indexOf(','); int p2 = line.indexOf(',', p1 + 1); int p3 = line.indexOf(',', p2 + 1);
+    if (p1 == -1 || p2 == -1 || p3 == -1) {
+      Serial.printf(
+        "Skipping malformed queue line: %s\n",
+        line.c_str()
+      );
+      continue;
+    }
+
+    int button = line.substring(0, p1).toInt(); String soundFile = line.substring(p1 + 1, p2); String timestamp = line.substring(p2 + 1, p3);
+    unsigned long gap = line.substring(p3 + 1).toInt();
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println(F("WiFi disconnected."));
+      allSucceeded = false;
+      break;
+    }
+
+    // POST queue.csv
     HTTPClient http;
     http.setReuse(false);
-    http.setTimeout(50000);
-    http.begin(secureClient, apiUrl("/api/log"));
-    http.addHeader("Content-Type", "application/json");
-    String body = String("{\"button\":") + logQueue[i].button +
-                  ",\"soundfile\":\"" + logQueue[i].soundFile +
-                  "\",\"timestamp\":\"" + logQueue[i].timestamp +
-                  "\",\"ms_since_last_sound\":" + logQueue[i].gap + "}";
-    int httpCode = http.POST(body);
-    Serial.printf("Posted: %s\n", body.c_str());
+    http.setTimeout(5000);
+    http.begin(
+      secureClient,
+      apiUrl("/api/log")
+    );
+    http.addHeader(
+      "Content-Type",
+      "application/json"
+    );
 
-    Serial.printf("  POST %d\n", httpCode);
+    String body =
+      String("{\"button\":") + button +
+      ",\"soundfile\":\"" + soundFile +
+      "\",\"timestamp\":\"" + timestamp +
+      "\",\"owner_email\":\"" + ownerEmail +
+      "\",\"ms_since_last_sound\":" + gap +
+      "}";
+
+    int httpCode = http.POST(body);
+    Serial.printf(
+      "POST %d : %s\n",
+      httpCode,
+      body.c_str()
+    );
+    if (httpCode > 0) {
+      Serial.println(http.getString());
+    }
     http.end();
+    if (httpCode < 200 || httpCode >= 300) {
+      Serial.println(F("Upload failed."));
+      allSucceeded = false;
+      break;
+    }
+    uploadedCount++;
     delay(200);
   }
-  queueCount = 0;
-  if (SD.exists(QUEUE_FILE)) SD.remove(QUEUE_FILE);
+  f.close();
+
+  if (!allSucceeded) {
+    Serial.printf(
+      "Stopped after %d successful uploads. Queue file left untouched.\n",
+      uploadedCount
+    );
+    return;
+  }
+  // make empty queue.csv
+  SD.remove(QUEUE_FILE);
+  File clearFile = SD.open(QUEUE_FILE, FILE_WRITE);
+  clearFile.close();
+  Serial.printf(
+    "Successfully uploaded %d entries. Queue cleared.\n",
+    uploadedCount
+  );
 }
+
 
 // =========================== ENTER / EXIT WIFI MODE ===========================
 
@@ -650,6 +776,7 @@ void setup() {
     return;
   }
   ensureDirectories();
+  loadOwnerEmail();
   scan(SD.open("/"));
   printMenu();
   secureClient.setInsecure();
