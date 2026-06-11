@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,6 +21,7 @@ import {
 } from "recharts";
 import {
   Download,
+  BarChart3,
   Music,
   MousePointerClick,
   Star,
@@ -76,32 +78,51 @@ function formatDateTime(timestamp: number) {
   return new Date(timestamp).toLocaleString();
 }
 
-function exportCSV(logs: LogEntry[]) {
+function normalizeEmail(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function escapeCSV(value: string | number) {
+  const text = String(value ?? "");
+  if (text.includes(",") || text.includes('"') || text.includes("\n")) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function safeFileName(value: string) {
+  return value.replace(/[^a-z0-9._-]/gi, "_");
+}
+
+function exportCSV(logs: LogEntry[], fileName = "parrot-button-press-log.csv") {
   const headers = ["timestamp", "datetime", "owner_email", "button", "soundfile"];
 
   const rows = logs.map((d) =>
     [
       d.timestamp,
-      new Date(d.timestamp).toISOString(),
+      d.timestamp ? new Date(d.timestamp).toISOString() : "",
       d.owner_email || "",
       d.button,
       d.soundfile,
-    ].join(",")
+    ]
+      .map(escapeCSV)
+      .join(",")
   );
 
   const csv = [headers.join(","), ...rows].join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
 
   a.href = url;
-  a.download = "parrot-button-press-log.csv";
+  a.download = fileName;
   a.click();
 
   URL.revokeObjectURL(url);
 }
 
 export default function Research() {
+  const navigate = useNavigate();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [profiles, setProfiles] = useState<OwnerProfile[]>([]);
   const [visibleCharts, setVisibleCharts] = useState<Record<ResearchChartId, boolean>>({
@@ -217,7 +238,7 @@ export default function Research() {
   const ownerStats = useMemo(() => {
     return profiles.map((profile) => {
       const ownerLogs = logs.filter(
-        (log) => profile.email && log.owner_email === profile.email
+        (log) => normalizeEmail(profile.email) && normalizeEmail(log.owner_email) === normalizeEmail(profile.email)
       );
 
       const favorite = ownerLogs.reduce<Record<string, number>>((acc, log) => {
@@ -264,6 +285,41 @@ export default function Research() {
       icon: Music,
     },
   ];
+
+  const getLogsForOwner = (email?: string | null) => {
+    const cleanEmail = normalizeEmail(email);
+
+    if (!cleanEmail) {
+      return [];
+    }
+
+    return logs.filter(
+      (log) => normalizeEmail(log.owner_email) === cleanEmail
+    );
+  };
+
+  const exportOwnerCSV = (email?: string | null) => {
+    const cleanEmail = normalizeEmail(email);
+
+    if (!cleanEmail) {
+      return;
+    }
+
+    exportCSV(
+      getLogsForOwner(cleanEmail),
+      `parrot-button-press-log-${safeFileName(cleanEmail)}.csv`
+    );
+  };
+
+  const openOwnerStats = (email?: string | null) => {
+    const cleanEmail = normalizeEmail(email);
+
+    if (!cleanEmail) {
+      return;
+    }
+
+    navigate(`/research/stats?owner_email=${encodeURIComponent(cleanEmail)}`);
+  };
 
   const toggleChart = (id: ResearchChartId, checked: boolean) => {
     setVisibleCharts((current) => ({
@@ -344,6 +400,7 @@ export default function Research() {
                     <th className="py-2 pr-4">Presses</th>
                     <th className="py-2 pr-4">Favorite sound</th>
                     <th className="py-2 pr-4">Agreement</th>
+                    <th className="py-2 pr-4">Actions</th>
                   </tr>
                 </thead>
 
@@ -360,6 +417,33 @@ export default function Research() {
                       <td className="py-2 pr-4">{owner.favoriteSound}</td>
                       <td className="py-2 pr-4">
                         {owner.agreement_accepted ? "Accepted" : "Not accepted"}
+                      </td>
+                      <td className="py-2 pr-4">
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2"
+                            disabled={!owner.email}
+                            onClick={() => exportOwnerCSV(owner.email)}
+                          >
+                            <Download className="h-3.5 w-3.5 mr-1" />
+                            CSV
+                          </Button>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2"
+                            disabled={!owner.email}
+                            onClick={() => openOwnerStats(owner.email)}
+                          >
+                            <BarChart3 className="h-3.5 w-3.5 mr-1" />
+                            Stats
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

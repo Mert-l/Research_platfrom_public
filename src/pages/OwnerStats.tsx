@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,6 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Music, MousePointerClick, Star } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 interface LogEntry {
   timestamp: string;
@@ -28,34 +30,94 @@ const chartOptions: { id: OwnerStatsChartId; label: string }[] = [
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
+function cleanEmail(value: string) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function cleanSoundName(value: string) {
+  if (!value) return "";
+
+  const fileName = String(value).split("/").pop() || value;
+
+  return fileName
+    .replace(/\.[^.]+$/, "")
+    .replace(/^\d+-/, "")
+    .replace(/^[^_]+__/, "")
+    .replace(/_/g, " ");
+}
+
 export default function OwnerStats() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [visibleCharts, setVisibleCharts] = useState<Record<OwnerStatsChartId, boolean>>({
+  const [buttonNames, setButtonNames] = useState<Record<number, string>>({
+    1: "No sound assigned",
+    2: "No sound assigned",
+    3: "No sound assigned",
+    4: "No sound assigned",
+  });
+
+  const [visibleCharts, setVisibleCharts] = useState<
+    Record<OwnerStatsChartId, boolean>
+  >({
     buttonPresses: true,
     soundsPlayed: true,
   });
 
-  const ownerEmail = localStorage.getItem("parrot_owner_email") || "";
+  const [searchParams] = useSearchParams();
+
+  const researcherSelectedEmail = searchParams.get("owner_email") || "";
+
+  const ownerEmail =
+    researcherSelectedEmail ||
+    localStorage.getItem("parrot_owner_email") ||
+    "";
 
   const loadLogs = async () => {
     const res = await fetch(`${API_BASE}/api/logs`);
-    if (!res.ok) throw new Error("Could not load logs");
+
+    if (!res.ok) {
+      throw new Error("Could not load logs");
+    }
 
     const data = await res.json();
     const allLogs: LogEntry[] = data.logs || [];
 
     setLogs(
       allLogs.filter(
-        (log) =>
-          String(log.owner_email || "").toLowerCase() ===
-          ownerEmail.toLowerCase()
+        (log) => cleanEmail(log.owner_email || "") === cleanEmail(ownerEmail)
       )
     );
   };
 
+  const loadButtonNames = async () => {
+    if (!ownerEmail) return;
+
+    const { data, error } = await supabase
+      .from("device_configs")
+      .select("buttons")
+      .eq("owner_email", cleanEmail(ownerEmail))
+      .maybeSingle();
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    const buttons = data?.buttons || {};
+
+    setButtonNames({
+      1: buttons["1"] ? cleanSoundName(buttons["1"]) : "No sound assigned",
+      2: buttons["2"] ? cleanSoundName(buttons["2"]) : "No sound assigned",
+      3: buttons["3"] ? cleanSoundName(buttons["3"]) : "No sound assigned",
+      4: buttons["4"] ? cleanSoundName(buttons["4"]) : "No sound assigned",
+    });
+  };
+
   useEffect(() => {
+    if (!ownerEmail) return;
+
     loadLogs();
-  }, []);
+    loadButtonNames();
+  }, [ownerEmail]);
 
   const totalPresses = logs.length;
 
@@ -63,7 +125,7 @@ export default function OwnerStats() {
     const counts = new Map<string, number>();
 
     logs.forEach((log) => {
-      const sound = log.soundfile || "Unassigned";
+      const sound = log.soundfile ? cleanSoundName(log.soundfile) : "Unassigned";
       counts.set(sound, (counts.get(sound) || 0) + 1);
     });
 
@@ -74,6 +136,7 @@ export default function OwnerStats() {
 
   const buttonStats = useMemo(() => {
     const counts = new Map<number, number>();
+
     [1, 2, 3, 4].forEach((button) => counts.set(button, 0));
 
     logs.forEach((log) => {
@@ -82,9 +145,10 @@ export default function OwnerStats() {
 
     return [...counts.entries()].map(([button, presses]) => ({
       button: `Button ${button}`,
+      assignedSound: buttonNames[button] || "No sound assigned",
       presses,
     }));
-  }, [logs]);
+  }, [logs, buttonNames]);
 
   const favoriteSound = topSounds[0]?.name || "No data yet";
 
@@ -116,7 +180,9 @@ export default function OwnerStats() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">My Parrot Stats</h1>
+        <h1 className="text-2xl font-bold tracking-tight">
+          My Parrot Stats
+        </h1>
         <p className="text-muted-foreground mt-1">
           Statistics only for the parrot registered with: {ownerEmail}
         </p>
@@ -147,7 +213,9 @@ export default function OwnerStats() {
           <CardContent className="p-5 flex items-center gap-4">
             <Music className="h-8 w-8 text-primary" />
             <div>
-              <p className="text-sm text-muted-foreground">Different Sounds Played</p>
+              <p className="text-sm text-muted-foreground">
+                Different Sounds Played
+              </p>
               <p className="text-2xl font-bold">{topSounds.length}</p>
             </div>
           </CardContent>
@@ -162,10 +230,15 @@ export default function OwnerStats() {
 
           <CardContent className="space-y-3">
             {chartOptions.map((option) => (
-              <label key={option.id} className="flex items-center gap-2 text-sm cursor-pointer">
+              <label
+                key={option.id}
+                className="flex items-center gap-2 text-sm cursor-pointer"
+              >
                 <Checkbox
                   checked={visibleCharts[option.id]}
-                  onCheckedChange={(checked) => toggleChart(option.id, checked === true)}
+                  onCheckedChange={(checked) =>
+                    toggleChart(option.id, checked === true)
+                  }
                 />
                 {option.label}
               </label>
@@ -194,8 +267,32 @@ export default function OwnerStats() {
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="button" />
                     <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Bar dataKey="presses" fill="hsl(201, 96%, 39%)" radius={[4, 4, 0, 0]} />
+                    <Tooltip
+                      formatter={(value, name, props) => {
+                        if (name === "presses") {
+                          return [
+                            value,
+                            `Presses — `,
+                          ];
+                        }
+
+                        return [value, name];
+                      }}
+                      labelFormatter={(label) => {
+                        const row = buttonStats.find(
+                          (item) => item.button === label
+                        );
+
+                        return row
+                          ? `${label}: ${row.assignedSound}`
+                          : String(label);
+                      }}
+                    />
+                    <Bar
+                      dataKey="presses"
+                      fill="hsl(201, 96%, 39%)"
+                      radius={[4, 4, 0, 0]}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </CardContent>
@@ -210,11 +307,16 @@ export default function OwnerStats() {
 
               <CardContent>
                 {topSounds.length === 0 ? (
-                  <p className="text-muted-foreground">No button presses yet.</p>
+                  <p className="text-muted-foreground">
+                    No button presses yet.
+                  </p>
                 ) : (
                   <div className="space-y-2">
                     {topSounds.map((sound) => (
-                      <div key={sound.name} className="flex justify-between border-b py-2 text-sm">
+                      <div
+                        key={sound.name}
+                        className="flex justify-between border-b py-2 text-sm"
+                      >
                         <span>{sound.name}</span>
                         <span>{sound.plays} plays</span>
                       </div>

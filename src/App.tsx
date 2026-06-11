@@ -13,14 +13,14 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-function ResearchProtectedRoute() {
+function ResearchProtectedRoute({ children }: { children: React.ReactNode }) {
   const isResearcher = localStorage.getItem("researcher_logged_in") === "true";
 
   if (!isResearcher) {
     return <Navigate to="/research-login" replace />;
   }
 
-  return <Research />;
+  return <>{children}</>;
 }
 
 const App = () => (
@@ -35,7 +35,26 @@ const App = () => (
             <Route path="/profile" element={<Profile />} />
             <Route path="/my-stats" element={<OwnerStats />} />
             <Route path="/research-login" element={<ResearchLogin />} />
-            <Route path="/research" element={<ResearchProtectedRoute />} />
+            <Route path="/research/stats" element={<OwnerStats />} />
+
+            <Route
+              path="/research"
+              element={
+                <ResearchProtectedRoute>
+                  <Research />
+                </ResearchProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/research/stats"
+              element={
+                <ResearchProtectedRoute>
+                  <OwnerStats />
+                </ResearchProtectedRoute>
+              }
+            />
+
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Layout>
