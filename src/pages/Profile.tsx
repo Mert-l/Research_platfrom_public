@@ -649,7 +649,7 @@ export default function Profile() {
               <div className="max-h-[400px] overflow-y-auto space-y-3 text-left text-sm">
                 <p>
                   This application is used as part of a research project studying
-                  parrot interaction with a sound-playing device.
+                  parrot interaction with a sound-playing device. As a user, you agree that the files you apload can be seen by the researcher.
                 </p>
               </div>
             </AlertDialogDescription>
