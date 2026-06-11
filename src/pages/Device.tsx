@@ -138,7 +138,16 @@ export default function Device() {
   };
 
   const loadSounds = async () => {
-    const res = await fetch(`${API_BASE}/api/sounds`);
+    const ownerEmail = getCurrentOwnerEmail();
+
+    if (!ownerEmail) {
+      return [];
+    }
+
+    const res = await fetch(
+      `${API_BASE}/api/sounds?owner_email=${encodeURIComponent(ownerEmail)}`
+    );
+
     if (!res.ok) throw new Error("Could not load sounds");
 
     const data = await res.json();
@@ -364,6 +373,12 @@ export default function Device() {
     if (!selectedButton) return;
 
     try {
+      const ownerEmail = getCurrentOwnerEmail();
+
+      if (!ownerEmail) {
+        throw new Error("No owner email found. Please save or log in to an owner profile first.");
+      }
+
       let finalSoundFile = tempSoundFile;
       let finalLabel = tempSongName.trim();
 
@@ -374,6 +389,7 @@ export default function Device() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            owner_email: ownerEmail,
             name: tempUploadFile.name,
             label: finalLabel,
             data,

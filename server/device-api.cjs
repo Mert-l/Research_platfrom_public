@@ -149,20 +149,30 @@ function writeSoundIndex(index) {
   fs.writeFileSync(SOUND_INDEX_PATH, JSON.stringify(index, null, 2));
 }
 
-function listSounds() {
+function listSounds(ownerEmail = '') {
+  const cleanEmail = cleanOwnerEmail(ownerEmail);
+
   const index = readSoundIndex();
   const files = fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3)$/i.test(f));
+
   const fromIndex = new Map((index.sounds || []).map(s => [s.name, s]));
 
-  return files.map(name => {
+  const sounds = files.map(name => {
     return (
       fromIndex.get(name) || {
         name,
         label: name.replace(/\.[^.]+$/, ''),
         duration_ms: 0,
+        owner_email: '',
       }
     );
   });
+
+  if (!cleanEmail) {
+    return sounds;
+  }
+
+  return sounds.filter(sound => cleanOwnerEmail(sound.owner_email) === cleanEmail);
 }
 
 function normalizeTimestamp(value) {
@@ -283,7 +293,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {
         owner_email: ownerEmail,
         buttons: readConfig(ownerEmail),
-        sounds: listSounds(),
+        sounds: listSounds(ownerEmail),
       });
     }
 
@@ -303,8 +313,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/device-config') {
-      const config = readConfig();
-      const sounds = listSounds().map(s => s.name);
+      const ownerEmail = ownerEmailFromRequest(url);
+      const config = readConfig(ownerEmail);
+      const sounds = listSounds(ownerEmail).map(s => s.name);
       const tracks = {};
 
       [1, 2, 3, 4].forEach(id => {
@@ -313,6 +324,7 @@ const server = http.createServer(async (req, res) => {
       });
 
       return send(res, 200, {
+        owner_email: ownerEmail,
         buttons: config,
         tracks,
       });
@@ -331,11 +343,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/sounds') {
-      return send(res, 200, { sounds: listSounds() });
+      const ownerEmail = ownerEmailFromRequest(url);
+
+      return send(res, 200, {
+        sounds: listSounds(ownerEmail),
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/sounds') {
       const body = await readJsonBody(req);
+      const ownerEmail = ownerEmailFromRequest(url, body);
+
+      if (!ownerEmail) {
+        return send(res, 400, { error: 'Missing owner_email' });
+      }
 
       const fileName = path
         .basename(String(body.name || 'sound.wav'))
@@ -358,19 +379,24 @@ const server = http.createServer(async (req, res) => {
         return send(res, 400, { error: 'Sound files must be maximum 2 minutes' });
       }
 
+      const ownerPrefix = ownerEmail.replace(/[^a-z0-9._-]/g, '_');
+      const storedFileName = `${ownerPrefix}__${fileName}`;
+
       fs.writeFileSync(
-        path.join(SOUNDS_DIR, fileName),
+        path.join(SOUNDS_DIR, storedFileName),
         Buffer.from(base64, 'base64')
       );
 
       const index = readSoundIndex();
-      const existing = (index.sounds || []).filter(s => s.name !== fileName);
+      const existing = (index.sounds || []).filter(s => s.name !== storedFileName);
       const cleanLabel = String(body.label || '').trim();
 
       const newSound = {
-        name: fileName,
+        name: storedFileName,
+        original_name: fileName,
         label: cleanLabel || fileName.replace(/\.[^.]+$/, ''),
         duration_ms: Number(body.duration_ms || 0),
+        owner_email: ownerEmail,
       };
 
       writeSoundIndex({
@@ -379,7 +405,7 @@ const server = http.createServer(async (req, res) => {
 
       return send(res, 200, {
         ok: true,
-        sound: fileName,
+        sound: storedFileName,
         metadata: newSound,
       });
     }

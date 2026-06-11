@@ -14,6 +14,16 @@
       "name": "ball_shot.wav",
       "label": "ball_shot",
       "duration_ms": 534
+    },
+    {
+      "name": "Metal_pipe_falling_sound_effect_loud_.mp3",
+      "label": "freesound_community-comedic-silence-90574",
+      "duration_ms": 2856
+    },
+    {
+      "name": "wake_your_a___up_bc_it_s_time_to_go_beast_mode.mp3",
+      "label": "sound2",
+      "duration_ms": 9892
     }
   ]
 }
