@@ -1,493 +1,491 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+const http = require("http");
+const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
-const ROOT = path.resolve(__dirname, '..');
-const MOCK = path.join(ROOT, 'mock_device');
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseSecret =
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const CONFIG_PATH = path.join(MOCK, 'config', 'button_map.json');
-const USER_CONFIGS_DIR = path.join(MOCK, 'config', 'users');
-
-const SOUND_INDEX_PATH = path.join(MOCK, 'metadata', 'sound_index');
-const LOG_PATH = path.join(MOCK, 'log', 'database.csv');
-const SOUNDS_DIR = path.join(MOCK, 'sounds');
-
-function ensureFiles() {
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.mkdirSync(USER_CONFIGS_DIR, { recursive: true });
-  fs.mkdirSync(path.dirname(SOUND_INDEX_PATH), { recursive: true });
-  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
-  fs.mkdirSync(SOUNDS_DIR, { recursive: true });
-
-  if (!fs.existsSync(CONFIG_PATH)) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ 1: '', 2: '', 3: '', 4: '' }, null, 2));
-  }
-
-  if (!fs.existsSync(SOUND_INDEX_PATH)) {
-    fs.writeFileSync(SOUND_INDEX_PATH, JSON.stringify({ sounds: [] }, null, 2));
-  }
-
-  if (!fs.existsSync(LOG_PATH)) {
-    fs.writeFileSync(
-      LOG_PATH,
-      'timestamp,owner_email,button,soundfile,ms_since_last_sound\n'
-    );
-  }
+if (!supabaseUrl || !supabaseSecret) {
+  throw new Error(
+    "Missing SUPABASE_URL and SUPABASE_SECRET_KEY Railway variables"
+  );
 }
 
-function send(res, status, data, type = 'application/json') {
+const supabaseAdmin = createClient(supabaseUrl, supabaseSecret, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
+
+const SOUND_BUCKET = "parrot-sounds";
+
+function send(res, status, data, contentType = "application/json") {
   res.writeHead(status, {
-    'Content-Type': type,
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    "Content-Type": contentType,
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
   });
 
-  if (type === 'application/json') {
+  if (contentType === "application/json") {
     res.end(JSON.stringify(data));
-  } else {
-    res.end(data);
+    return;
   }
+
+  res.end(data);
 }
 
 function readJsonBody(req) {
-  const t0 = Date.now();
-  console.log("  └─ reading body start", t0);
-
   return new Promise((resolve, reject) => {
-    let body = '';
+    let body = "";
 
-    req.on('data', chunk => {
+    req.on("data", (chunk) => {
       body += chunk;
-      console.log("  └─ chunk", chunk.length, "bytes");
     });
 
-    req.on('end', () => {
-      const t1 = Date.now();
-      console.log("  └─ body END", t1, "duration:", t1 - t0, "ms");
-
+    req.on("end", () => {
       try {
         resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
+      } catch {
+        reject(new Error("Invalid JSON body"));
       }
     });
+
+    req.on("error", reject);
   });
-}
-
-function emptyConfig() {
-  return { 1: '', 2: '', 3: '', 4: '' };
-}
-
-function cleanConfig(next = {}) {
-  const clean = {};
-
-  [1, 2, 3, 4].forEach(id => {
-    clean[id] = String(next[id] || '');
-  });
-
-  return clean;
 }
 
 function cleanOwnerEmail(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9@._-]/g, '_');
+  return String(value || "").trim().toLowerCase();
 }
 
 function ownerEmailFromRequest(url, body = {}) {
   return cleanOwnerEmail(
     body.owner_email ||
-    body.ownerEmail ||
-    url.searchParams.get('owner_email') ||
-    url.searchParams.get('ownerEmail') ||
-    url.searchParams.get('email') ||
-    ''
+      body.ownerEmail ||
+      url.searchParams.get("owner_email") ||
+      url.searchParams.get("ownerEmail") ||
+      url.searchParams.get("email") ||
+      ""
   );
 }
 
-function configPathForOwner(ownerEmail = '') {
-  const cleanEmail = cleanOwnerEmail(ownerEmail);
-
-  if (!cleanEmail) {
-    return CONFIG_PATH;
-  }
-
-  return path.join(USER_CONFIGS_DIR, `${cleanEmail}.json`);
+function emptyConfig() {
+  return {
+    "1": "",
+    "2": "",
+    "3": "",
+    "4": "",
+  };
 }
 
-function readConfig(ownerEmail = '') {
-  const configPath = configPathForOwner(ownerEmail);
-
-  if (!fs.existsSync(configPath)) {
-    return emptyConfig();
-  }
-
-  try {
-    return cleanConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
-  } catch {
-    return emptyConfig();
-  }
+function cleanConfig(config = {}) {
+  return {
+    "1": String(config["1"] || config[1] || ""),
+    "2": String(config["2"] || config[2] || ""),
+    "3": String(config["3"] || config[3] || ""),
+    "4": String(config["4"] || config[4] || ""),
+  };
 }
 
-function writeConfig(config, ownerEmail = '') {
-  const configPath = configPathForOwner(ownerEmail);
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(cleanConfig(config), null, 2));
-}
-
-function readSoundIndex() {
-  try {
-    return JSON.parse(fs.readFileSync(SOUND_INDEX_PATH, 'utf8'));
-  } catch {
-    return { sounds: [] };
-  }
-}
-
-function writeSoundIndex(index) {
-  fs.writeFileSync(SOUND_INDEX_PATH, JSON.stringify(index, null, 2));
-}
-
-function listSounds(ownerEmail = '') {
-  const cleanEmail = cleanOwnerEmail(ownerEmail);
-
-  const index = readSoundIndex();
-  const files = fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3)$/i.test(f));
-
-  const fromIndex = new Map((index.sounds || []).map(s => [s.name, s]));
-
-  const sounds = files.map(name => {
-    return (
-      fromIndex.get(name) || {
-        name,
-        label: name.replace(/\.[^.]+$/, ''),
-        duration_ms: 0,
-        owner_email: '',
-      }
-    );
-  });
-
-  if (!cleanEmail) {
-    return sounds;
-  }
-
-  return sounds.filter(sound => cleanOwnerEmail(sound.owner_email) === cleanEmail);
+function fileNameFromPath(filePath) {
+  if (!filePath) return "";
+  return path.posix.basename(String(filePath).replace(/\\/g, "/"));
 }
 
 function normalizeTimestamp(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return Date.now();
+  const raw = String(value || "").trim();
 
-  const asNumber = Number(raw);
-  if (!Number.isNaN(asNumber)) {
-    return asNumber < 1000000000000 ? asNumber * 1000 : asNumber;
+  if (!raw) {
+    return new Date().toISOString();
+  }
+
+  const numericValue = Number(raw);
+
+  if (!Number.isNaN(numericValue)) {
+    const milliseconds =
+      numericValue < 1000000000000 ? numericValue * 1000 : numericValue;
+
+    const date = new Date(milliseconds);
+
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
   }
 
   const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) ? Date.now() : parsed;
+
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  return new Date().toISOString();
 }
 
-function readLogs() {
-  if (!fs.existsSync(LOG_PATH)) return [];
+async function loadOwnerConfig(ownerEmail) {
+  const { data, error } = await supabaseAdmin
+    .from("device_configs")
+    .select("buttons")
+    .eq("owner_email", ownerEmail)
+    .maybeSingle();
 
-  const content = fs.readFileSync(LOG_PATH, 'utf8').trim();
-  if (!content) return [];
+  if (error) throw error;
 
-  const lines = content.split(/\r?\n/);
-  const header = lines[0] || '';
-  const hasOwnerEmail = header.includes('owner_email');
-
-  return lines.slice(1).filter(Boolean).map((line) => {
-    const parts = line.split(',').map(v => v.trim());
-
-    if (hasOwnerEmail) {
-      const [timestamp, owner_email, button, soundfile, ms_since_last_sound] = parts;
-
-      return {
-        timestamp: normalizeTimestamp(timestamp),
-        owner_email,
-        button: Number(button),
-        soundfile,
-        ms_since_last_sound: Number(ms_since_last_sound || 0),
-      };
-    }
-
-    const [timestamp, button, soundfile] = parts;
-
-    return {
-      timestamp: normalizeTimestamp(timestamp),
-      owner_email: '',
-      button: Number(button),
-      soundfile,
-      ms_since_last_sound: 0,
-    };
-  });
+  return cleanConfig(data?.buttons || emptyConfig());
 }
 
-function appendLog({
-  button,
-  soundfile,
-  timestamp,
-  owner_email,
-  ms_since_last_sound,
-}) {
-  const safeButton = Number(button);
+async function loadOwnerSounds(ownerEmail) {
+  const { data, error } = await supabaseAdmin
+    .from("sound_files")
+    .select(
+      "name, label, file_path, public_url, duration_ms, owner_email, created_at"
+    )
+    .eq("owner_email", ownerEmail)
+    .order("created_at", { ascending: false });
 
-  const safeOwnerEmail = String(owner_email || '')
-    .replace(/[\r\n,]/g, '_');
+  if (error) throw error;
 
-  const safeSound = String(soundfile || '')
-    .replace(/[\r\n,]/g, '_');
+  return data || [];
+}
 
-  const safeTimestamp = String(timestamp || '')
-    .replace(/[\r\n,]/g, '_');
+async function findOwnerSound(ownerEmail, requestedName) {
+  const sounds = await loadOwnerSounds(ownerEmail);
 
-  const delta = Number(ms_since_last_sound || 0);
-
-  fs.appendFileSync(
-    LOG_PATH,
-    `${safeTimestamp},${safeOwnerEmail},${safeButton},${safeSound},${delta}\n`
+  return sounds.find(
+    (sound) => fileNameFromPath(sound.file_path) === requestedName
   );
 }
 
-function isAllowedSoundName(fileName) {
-  return /\.(wav|mp3)$/i.test(fileName);
-}
-
-function isAllowedDuration(durationMs) {
-  if (durationMs === undefined || durationMs === null || durationMs === '') return true;
-  return Number(durationMs) <= 120000;
-}
-
-ensureFiles();
-
 const server = http.createServer(async (req, res) => {
-  const t0 = Date.now();
-  const id = Math.random().toString(16).slice(2);
-
-  console.log(`\n[${id}] ▶ INCOMING`, req.method, req.url, t0);
-
   try {
-    if (req.method === 'OPTIONS') {
+    if (req.method === "OPTIONS") {
       return send(res, 204, {});
     }
 
     const url = new URL(req.url, `http://${req.headers.host}`);
 
-    if (req.method === 'GET' && url.pathname === '/') {
+    if (req.method === "GET" && url.pathname === "/") {
       return send(res, 200, {
         ok: true,
-        name: 'parrot-device-api',
-        message: 'API is running. Use /api/health, /api/logs, /api/sounds, or /api/config.'
+        name: "parrot-device-api",
+        storage: "supabase",
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/health') {
-      return send(res, 200, { ok: true, name: 'parrot-device-api' });
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/config') {
-      const ownerEmail = ownerEmailFromRequest(url);
-
-      return send(res, 200, {
-        owner_email: ownerEmail,
-        buttons: readConfig(ownerEmail),
-        sounds: listSounds(ownerEmail),
-      });
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/config') {
-      const body = await readJsonBody(req);
-      const ownerEmail = ownerEmailFromRequest(url, body);
-      const next = body.buttons || body;
-      const clean = cleanConfig(next);
-
-      writeConfig(clean, ownerEmail);
-
+    if (req.method === "GET" && url.pathname === "/api/health") {
       return send(res, 200, {
         ok: true,
-        owner_email: ownerEmail,
-        buttons: clean,
+        name: "parrot-device-api",
+        storage: "supabase",
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/device-config') {
+    /*
+     * Return one owner's button configuration to the physical device.
+     */
+    if (req.method === "GET" && url.pathname === "/api/config") {
       const ownerEmail = ownerEmailFromRequest(url);
-      const config = readConfig(ownerEmail);
-      const sounds = listSounds(ownerEmail).map(s => s.name);
-      const tracks = {};
 
-      [1, 2, 3, 4].forEach(id => {
-        const sound = config[id] || '';
-        tracks[id] = Math.max(1, sounds.indexOf(sound) + 1);
-      });
+      if (!ownerEmail) {
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
+      }
+
+      const storedButtons = await loadOwnerConfig(ownerEmail);
+
+      const buttons = Object.fromEntries(
+        Object.entries(storedButtons).map(([button, filePath]) => [
+          button,
+          fileNameFromPath(filePath),
+        ])
+      );
 
       return send(res, 200, {
         owner_email: ownerEmail,
-        buttons: config,
-        tracks,
+        buttons,
       });
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/config/button_map.json') {
-      const raw = fs.readFileSync(CONFIG_PATH);
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Content-Length': raw.length,
-        'Access-Control-Allow-Origin': '*',
-      });
-
-      return res.end(raw);
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/sounds') {
-      const ownerEmail = ownerEmailFromRequest(url);
-
-      return send(res, 200, {
-        sounds: listSounds(ownerEmail),
-      });
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/sounds') {
+    /*
+     * Save an owner's button configuration.
+     * The website currently saves directly to Supabase, but this endpoint
+     * remains available for other clients.
+     */
+    if (req.method === "POST" && url.pathname === "/api/config") {
       const body = await readJsonBody(req);
       const ownerEmail = ownerEmailFromRequest(url, body);
 
       if (!ownerEmail) {
-        return send(res, 400, { error: 'Missing owner_email' });
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
       }
 
-      const fileName = path
-        .basename(String(body.name || 'sound.wav'))
-        .replace(/[^a-zA-Z0-9._-]/g, '_');
+      const buttons = cleanConfig(body.buttons || body);
 
-      const base64 = String(body.data || '').replace(
-        /^data:audio\/[a-zA-Z0-9.+-]+;base64,/,
-        ''
+      const { error } = await supabaseAdmin.from("device_configs").upsert(
+        {
+          owner_email: ownerEmail,
+          buttons,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "owner_email",
+        }
       );
 
-      if (!fileName || !base64) {
-        return send(res, 400, { error: 'Missing name or data' });
-      }
-
-      if (!isAllowedSoundName(fileName)) {
-        return send(res, 400, { error: 'Only MP3 and WAV files are allowed' });
-      }
-
-      if (!isAllowedDuration(body.duration_ms)) {
-        return send(res, 400, { error: 'Sound files must be maximum 2 minutes' });
-      }
-
-      const ownerPrefix = ownerEmail.replace(/[^a-z0-9._-]/g, '_');
-      const storedFileName = `${ownerPrefix}__${fileName}`;
-
-      fs.writeFileSync(
-        path.join(SOUNDS_DIR, storedFileName),
-        Buffer.from(base64, 'base64')
-      );
-
-      const index = readSoundIndex();
-      const existing = (index.sounds || []).filter(s => s.name !== storedFileName);
-      const cleanLabel = String(body.label || '').trim();
-
-      const newSound = {
-        name: storedFileName,
-        original_name: fileName,
-        label: cleanLabel || fileName.replace(/\.[^.]+$/, ''),
-        duration_ms: Number(body.duration_ms || 0),
-        owner_email: ownerEmail,
-      };
-
-      writeSoundIndex({
-        sounds: [...existing, newSound],
-      });
+      if (error) throw error;
 
       return send(res, 200, {
         ok: true,
-        sound: storedFileName,
-        metadata: newSound,
+        owner_email: ownerEmail,
+        buttons,
       });
     }
 
-    if (req.method === 'GET' && url.pathname.startsWith('/api/sounds/')) {
-      const fileName = path.basename(
-        decodeURIComponent(url.pathname.replace('/api/sounds/', ''))
-      );
+    /*
+     * Compatibility endpoint containing both button filenames and tracks.
+     */
+    if (req.method === "GET" && url.pathname === "/api/device-config") {
+      const ownerEmail = ownerEmailFromRequest(url);
 
-      const filePath = path.join(SOUNDS_DIR, fileName);
-
-      if (!fs.existsSync(filePath)) {
-        return send(res, 404, { error: 'Sound not found' });
+      if (!ownerEmail) {
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
       }
 
-      const ext = path.extname(fileName).toLowerCase();
-      const type = ext === '.mp3' ? 'audio/mpeg' : 'audio/wav';
+      const storedButtons = await loadOwnerConfig(ownerEmail);
+      const sounds = await loadOwnerSounds(ownerEmail);
+
+      const soundNames = sounds.map((sound) =>
+        fileNameFromPath(sound.file_path)
+      );
+
+      const buttons = Object.fromEntries(
+        Object.entries(storedButtons).map(([button, filePath]) => [
+          button,
+          fileNameFromPath(filePath),
+        ])
+      );
+
+      const tracks = {};
+
+      [1, 2, 3, 4].forEach((button) => {
+        const soundName = buttons[String(button)] || "";
+        const index = soundNames.indexOf(soundName);
+        tracks[String(button)] = index >= 0 ? index + 1 : 0;
+      });
+
+      return send(res, 200, {
+        owner_email: ownerEmail,
+        buttons,
+        tracks,
+      });
+    }
+
+    /*
+     * Return only sounds belonging to the requested owner.
+     */
+    if (req.method === "GET" && url.pathname === "/api/sounds") {
+      const ownerEmail = ownerEmailFromRequest(url);
+
+      if (!ownerEmail) {
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
+      }
+
+      const storedSounds = await loadOwnerSounds(ownerEmail);
+
+      const sounds = storedSounds.map((sound) => ({
+        name: fileNameFromPath(sound.file_path),
+        label:
+          sound.label ||
+          sound.name ||
+          fileNameFromPath(sound.file_path).replace(/\.[^.]+$/, ""),
+        duration_ms: Number(sound.duration_ms || 0),
+      }));
+
+      return send(res, 200, {
+        owner_email: ownerEmail,
+        sounds,
+      });
+    }
+
+    /*
+     * Download one owner's sound from Supabase Storage.
+     */
+    if (
+      req.method === "GET" &&
+      url.pathname.startsWith("/api/sounds/")
+    ) {
+      const ownerEmail = ownerEmailFromRequest(url);
+
+      if (!ownerEmail) {
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
+      }
+
+      const requestedName = path.basename(
+        decodeURIComponent(url.pathname.replace("/api/sounds/", ""))
+      );
+
+      const sound = await findOwnerSound(ownerEmail, requestedName);
+
+      if (!sound) {
+        return send(res, 404, {
+          error: "Sound not found for this owner",
+        });
+      }
+
+      const { data: file, error } = await supabaseAdmin.storage
+        .from(SOUND_BUCKET)
+        .download(sound.file_path);
+
+      if (error) throw error;
+
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const extension = path.extname(requestedName).toLowerCase();
+
+      const contentType =
+        extension === ".mp3" ? "audio/mpeg" : "audio/wav";
 
       res.writeHead(200, {
-        'Content-Type': type,
-        'Access-Control-Allow-Origin': '*',
+        "Content-Type": contentType,
+        "Content-Length": buffer.length,
+        "Access-Control-Allow-Origin": "*",
       });
 
-      return fs.createReadStream(filePath).pipe(res);
+      return res.end(buffer);
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/logs') {
-      return send(res, 200, { logs: readLogs() });
+    /*
+     * Return all logs for the researcher, or one owner's logs when an email
+     * is supplied.
+     */
+    if (req.method === "GET" && url.pathname === "/api/logs") {
+      const ownerEmail = ownerEmailFromRequest(url);
+
+      let query = supabaseAdmin
+        .from("device_logs")
+        .select(
+          "id, owner_email, device_id, button, soundfile, pressed_at, ms_since_last_sound"
+        )
+        .order("pressed_at", { ascending: false });
+
+      if (ownerEmail) {
+        query = query.eq("owner_email", ownerEmail);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      const logs = (data || []).map((log) => ({
+        id: log.id,
+        timestamp: log.pressed_at,
+        owner_email: log.owner_email,
+        device_id: log.device_id,
+        button: Number(log.button),
+        soundfile: log.soundfile || "",
+        ms_since_last_sound: Number(log.ms_since_last_sound || 0),
+      }));
+
+      return send(res, 200, {
+        logs,
+      });
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/log') {
-      const logStart = Date.now();
-      console.log("  └─ /api/log handler ENTER", logStart);
-
+    /*
+     * Receive a physical button press from the Arduino.
+     */
+    if (req.method === "POST" && url.pathname === "/api/log") {
       const body = await readJsonBody(req);
-
-      console.log("  └─ JSON parsed", Date.now());
-
-      const ownerEmail = cleanOwnerEmail(body.owner_email || body.ownerEmail || '');
-      const config = readConfig(ownerEmail);
-
+      const ownerEmail = ownerEmailFromRequest(url, body);
       const button = Number(body.button);
 
+      if (!ownerEmail) {
+        return send(res, 400, {
+          error: "Missing owner_email",
+        });
+      }
+
+      if (![1, 2, 3, 4].includes(button)) {
+        return send(res, 400, {
+          error: "Button must be between 1 and 4",
+        });
+      }
+
+      const ownerConfig = await loadOwnerConfig(ownerEmail);
+
+      const configuredSoundPath = ownerConfig[String(button)] || "";
+
       const soundfile =
-        String(body.soundfile || config[button] || '');
+        fileNameFromPath(body.soundfile) ||
+        fileNameFromPath(configuredSoundPath);
 
-      const timestamp =
-        String(body.timestamp || new Date().toISOString());
+      const pressedAt = normalizeTimestamp(body.timestamp);
+      const msSinceLastSound = Number(
+        body.ms_since_last_sound || 0
+      );
 
-      const msSinceLastSound =
-        Number(body.ms_since_last_sound || 0);
+      const deviceId = String(
+        body.device_id || body.deviceId || ""
+      ).trim();
 
-      console.log("  └─ BEFORE appendLog", Date.now());
+      const { data, error } = await supabaseAdmin
+        .from("device_logs")
+        .insert({
+          owner_email: ownerEmail,
+          device_id: deviceId || null,
+          button,
+          soundfile,
+          pressed_at: pressedAt,
+          ms_since_last_sound: Number.isFinite(msSinceLastSound)
+            ? msSinceLastSound
+            : 0,
+        })
+        .select()
+        .single();
 
-      appendLog({
-        button,
-        soundfile,
-        timestamp,
-        owner_email: ownerEmail,
-        ms_since_last_sound: msSinceLastSound,
-      });
-
-      console.log("  └─ AFTER appendLog (CSV written)", Date.now());
+      if (error) throw error;
 
       return send(res, 200, {
         ok: true,
+        id: data.id,
+        owner_email: ownerEmail,
+        device_id: data.device_id,
         button,
         soundfile,
-        timestamp,
-        owner_email: ownerEmail,
-        ms_since_last_sound: msSinceLastSound,
+        timestamp: data.pressed_at,
+        ms_since_last_sound: data.ms_since_last_sound,
       });
     }
 
-    return send(res, 404, { error: 'Not found' });
+    return send(res, 404, {
+      error: "Not found",
+    });
   } catch (error) {
-    return send(res, 500, { error: error.message });
+    console.error(error);
+
+    return send(res, 500, {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Internal server error",
+    });
   }
 });
 
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Parrot device API running on port ${PORT}`);
 });
