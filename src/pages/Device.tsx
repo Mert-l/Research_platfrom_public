@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,15 +14,35 @@ import {
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
-  SheetDescription,
 } from "@/components/ui/sheet";
-import { Music, Upload, Play, Pause, X, Save, Shuffle } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Music,
+  Pause,
+  Play,
+  Save,
+  Shuffle,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 
 const SOUND_BUCKET = "parrot-sounds";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 interface SoundFile {
   id?: string;
@@ -76,6 +97,11 @@ function getCurrentOwnerEmail() {
     .toLowerCase();
 }
 
+function displaySoundLabel(sound?: SoundFile | null) {
+  if (!sound) return "";
+  return sound.label || sound.name?.replace(/\.[^.]+$/, "") || "Untitled";
+}
+
 function shuffleArray<T>(items: T[]) {
   const shuffled = [...items];
 
@@ -115,6 +141,9 @@ function isAllowedAudioFile(file: File) {
 }
 
 export default function Device() {
+  const { toast } = useToast();
+
+  const [ownerEmail, setOwnerEmail] = useState(getCurrentOwnerEmail());
   const [buttons, setButtons] = useState<ButtonConfig[]>(emptyButtons);
   const [sounds, setSounds] = useState<SoundFile[]>([]);
   const [selectedButton, setSelectedButton] = useState<ButtonConfig | null>(null);
@@ -130,11 +159,14 @@ export default function Device() {
   const [activePreviewButtonId, setActivePreviewButtonId] = useState<
     number | null
   >(null);
+  const [soundToDelete, setSoundToDelete] = useState<SoundFile | null>(null);
+  const [deletingSound, setDeletingSound] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { toast } = useToast();
+
+  const hasOwnerProfile = Boolean(ownerEmail);
 
   const soundByPath = useMemo(() => {
     const map = new Map<string, SoundFile>();
@@ -157,32 +189,30 @@ export default function Device() {
         color: buttonColors[id],
         label: String(id),
         songName:
-          sound?.label ||
-          sound?.name?.replace(/\.[^.]+$/, "") ||
-          soundFile.replace(/\.[^.]+$/, ""),
+          displaySoundLabel(sound) || soundFile.replace(/\.[^.]+$/, ""),
         soundFile,
         audioUrl: sound?.public_url || null,
       };
     });
   };
 
-  const loadSounds = async (ownerEmail: string) => {
+  const loadSounds = async (email: string) => {
     const { data, error } = await supabase
       .from("sound_files")
       .select("*")
-      .eq("owner_email", ownerEmail)
+      .eq("owner_email", email)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
 
-    return data || [];
+    return (data || []) as SoundFile[];
   };
 
-  const loadUserConfig = async (ownerEmail: string) => {
+  const loadUserConfig = async (email: string) => {
     const { data, error } = await supabase
       .from("device_configs")
       .select("buttons")
-      .eq("owner_email", ownerEmail)
+      .eq("owner_email", email)
       .maybeSingle();
 
     if (error) throw error;
@@ -191,27 +221,24 @@ export default function Device() {
   };
 
   const refreshConfig = async () => {
-    const ownerEmail = getCurrentOwnerEmail();
+    const email = getCurrentOwnerEmail();
+    setOwnerEmail(email);
 
-    if (!ownerEmail) {
-      toast({
-        title: "No owner profile",
-        description:
-          "Please save or log in to an owner profile first so your sounds can be loaded.",
-        variant: "destructive",
-      });
+    if (!email) {
+      setSounds([]);
+      setButtons(emptyButtons);
       return;
     }
 
     try {
-      const loadedSounds = await loadSounds(ownerEmail);
-
+      const loadedSounds = await loadSounds(email);
       const loadedSoundMap = new Map<string, SoundFile>();
+
       loadedSounds.forEach((sound) => {
         loadedSoundMap.set(sound.file_path, sound);
       });
 
-      const config = await loadUserConfig(ownerEmail);
+      const config = await loadUserConfig(email);
 
       setSounds(loadedSounds);
       setButtons(buildButtonsFromConfig(config, loadedSoundMap));
@@ -235,7 +262,7 @@ export default function Device() {
 
         return {
           ...button,
-          songName: sound?.label || button.songName,
+          songName: displaySoundLabel(sound) || button.songName,
           audioUrl: sound?.public_url || button.audioUrl,
         };
       })
@@ -243,6 +270,15 @@ export default function Device() {
   }, [soundByPath]);
 
   const openConfig = (button: ButtonConfig) => {
+    if (!hasOwnerProfile) {
+      toast({
+        title: "Create or log in to a profile first",
+        description:
+          "A profile is needed so uploaded sounds and button settings can be saved to the right owner.",
+      });
+      return;
+    }
+
     setSelectedButton(button);
     setTempSongName(button.songName);
     setTempSoundFile(button.soundFile);
@@ -259,10 +295,12 @@ export default function Device() {
     setTempSoundFile(filePath);
     setTempUploadFile(null);
     setTempUploadDurationMs(null);
-    setTempSongName(
-      sound?.label || sound?.name?.replace(/\.[^.]+$/, "") || ""
-    );
+    setTempSongName(displaySoundLabel(sound));
     setTempAudioUrl(sound?.public_url || null);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -325,8 +363,6 @@ export default function Device() {
   };
 
   const saveMappingToSupabase = async (nextButtons: ButtonConfig[]) => {
-    const ownerEmail = getCurrentOwnerEmail();
-
     if (!ownerEmail) {
       throw new Error("No owner email found. Please save an owner profile first.");
     }
@@ -347,8 +383,6 @@ export default function Device() {
   };
 
   const uploadSoundToSupabase = async () => {
-    const ownerEmail = getCurrentOwnerEmail();
-
     if (!ownerEmail) {
       throw new Error("No owner email found. Please save or log in first.");
     }
@@ -359,8 +393,7 @@ export default function Device() {
 
     const cleanFileName = tempUploadFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
     const filePath = `${ownerEmail}/${Date.now()}-${cleanFileName}`;
-    const label =
-      tempSongName.trim() || cleanFileName.replace(/\.[^.]+$/, "");
+    const label = tempSongName.trim() || cleanFileName.replace(/\.[^.]+$/, "");
 
     const { error: uploadError } = await supabase.storage
       .from(SOUND_BUCKET)
@@ -397,33 +430,29 @@ export default function Device() {
   };
 
   const handleShuffleButtonSounds = async () => {
-    const assignedSoundFiles = buttons
-      .map((button) => button.soundFile)
-      .filter(Boolean);
-
-    const uniqueAssignedSoundFiles = new Set(assignedSoundFiles);
-
-    if (assignedSoundFiles.length !== buttons.length) {
+    if (!hasOwnerProfile) {
       toast({
-        title: "Cannot shuffle yet",
-        description: "All 4 buttons need a sound before shuffling.",
-        variant: "destructive",
+        title: "Create or log in to a profile first",
+        description: "Shuffling has to be saved to an owner profile.",
       });
       return;
     }
 
-    if (uniqueAssignedSoundFiles.size !== buttons.length) {
+    const assignedButtons = buttons.filter((button) => button.soundFile);
+
+    if (assignedButtons.length < 2) {
       toast({
-        title: "Duplicate sounds found",
-        description: "Each button must have a different sound before shuffling.",
+        title: "Not enough sounds to shuffle",
+        description: "Assign sounds to at least 2 buttons first.",
         variant: "destructive",
       });
       return;
     }
 
     try {
-      let shuffledSounds = shuffleArray(
-        buttons.map((button) => ({
+      let shuffledAssignments = shuffleArray(
+        assignedButtons.map((button) => ({
+          originalButtonId: button.id,
           soundFile: button.soundFile,
           songName: button.songName,
           audioUrl: button.audioUrl,
@@ -431,16 +460,23 @@ export default function Device() {
       );
 
       for (let attempt = 0; attempt < 10; attempt += 1) {
-        const changedSomething = shuffledSounds.some(
-          (sound, index) => sound.soundFile !== buttons[index].soundFile
+        const changedSomething = shuffledAssignments.some(
+          (assignment, index) =>
+            assignment.soundFile !== assignedButtons[index].soundFile
         );
 
         if (changedSomething) break;
-        shuffledSounds = shuffleArray(shuffledSounds);
+        shuffledAssignments = shuffleArray(shuffledAssignments);
       }
 
-      const nextButtons = buttons.map((button, index) => {
-        const nextSound = shuffledSounds[index];
+      const shuffledByButtonId = new Map(
+        assignedButtons.map((button, index) => [button.id, shuffledAssignments[index]])
+      );
+
+      const nextButtons = buttons.map((button) => {
+        const nextSound = shuffledByButtonId.get(button.id);
+
+        if (!nextSound) return button;
 
         return {
           ...button,
@@ -455,11 +491,39 @@ export default function Device() {
 
       toast({
         title: "Sounds shuffled",
-        description: "Your button sounds were shuffled and saved to your profile.",
+        description:
+          "Assigned button sounds were shuffled. Empty buttons were left empty.",
       });
     } catch (error) {
       toast({
         title: "Shuffle failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleClearButton = async () => {
+    if (!selectedButton) return;
+
+    try {
+      const nextButtons = buttons.map((button) =>
+        button.id === selectedButton.id
+          ? { ...button, songName: "", soundFile: "", audioUrl: null }
+          : button
+      );
+
+      await saveMappingToSupabase(nextButtons);
+      setButtons(nextButtons);
+      setSheetOpen(false);
+
+      toast({
+        title: "Button cleared",
+        description: `Button ${selectedButton.id} no longer has a sound assigned.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Could not clear button",
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
@@ -478,9 +542,7 @@ export default function Device() {
         const uploadedSound = await uploadSoundToSupabase();
 
         finalSoundFile = uploadedSound.file_path;
-        finalLabel =
-          uploadedSound.label ||
-          uploadedSound.name.replace(/\.[^.]+$/, "");
+        finalLabel = displaySoundLabel(uploadedSound);
         finalAudioUrl = uploadedSound.public_url;
 
         setSounds((previous) => [uploadedSound, ...previous]);
@@ -489,9 +551,7 @@ export default function Device() {
 
         if (existingSound) {
           finalSoundFile = existingSound.file_path;
-          finalLabel =
-            existingSound.label ||
-            existingSound.name.replace(/\.[^.]+$/, "");
+          finalLabel = displaySoundLabel(existingSound);
           finalAudioUrl = existingSound.public_url;
         }
       }
@@ -529,6 +589,66 @@ export default function Device() {
     }
   };
 
+  const handleDeleteSound = async () => {
+    if (!soundToDelete || !ownerEmail) return;
+
+    setDeletingSound(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/sounds/delete`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          owner_email: ownerEmail,
+          file_path: soundToDelete.file_path,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || "Could not delete sound");
+      }
+
+      setSounds((previous) =>
+        previous.filter((sound) => sound.file_path !== soundToDelete.file_path)
+      );
+
+      setButtons((previous) =>
+        previous.map((button) =>
+          button.soundFile === soundToDelete.file_path
+            ? { ...button, soundFile: "", songName: "", audioUrl: null }
+            : button
+        )
+      );
+
+      if (tempSoundFile === soundToDelete.file_path) {
+        setTempSoundFile("");
+        setTempSongName("");
+        setTempAudioUrl(null);
+      }
+
+      toast({
+        title: "Sound deleted",
+        description:
+          "The sound was removed from your library and cleared from any buttons that used it.",
+      });
+
+      setSoundToDelete(null);
+      await refreshConfig();
+    } catch (error) {
+      toast({
+        title: "Delete failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingSound(false);
+    }
+  };
+
   const stopButtonPreview = () => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
@@ -543,7 +663,9 @@ export default function Device() {
     if (!button.audioUrl) {
       toast({
         title: "No sound assigned",
-        description: `Button ${button.id} does not have a sound yet.`,
+        description: hasOwnerProfile
+          ? `Button ${button.id} does not have a sound yet.`
+          : "Create or log in to an owner profile first, then assign sounds to buttons.",
       });
       return;
     }
@@ -590,11 +712,37 @@ export default function Device() {
           </p>
         </div>
 
-        <Button variant="outline" size="sm" onClick={handleShuffleButtonSounds}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleShuffleButtonSounds}
+          disabled={!hasOwnerProfile}
+        >
           <Shuffle className="h-4 w-4 mr-2" />
-          Shuffle sounds
+          Shuffle assigned sounds
         </Button>
       </div>
+
+      {!hasOwnerProfile && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="pt-6 space-y-3">
+            <div>
+              <p className="font-medium text-amber-950">
+                Start by creating or logging in to an owner profile.
+              </p>
+              <p className="text-sm text-amber-900 mt-1">
+                The owner profile tells the system whose sounds and button setup
+                should be loaded. After that, this page will save uploads and
+                button assignments to that profile.
+              </p>
+            </div>
+
+            <Button asChild>
+              <Link to="/profile">Go to Owner Profile / Register</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -665,6 +813,7 @@ export default function Device() {
                   variant="outline"
                   size="sm"
                   onClick={() => openConfig(button)}
+                  disabled={!hasOwnerProfile}
                 >
                   Configure
                 </Button>
@@ -673,6 +822,49 @@ export default function Device() {
           </div>
         </CardContent>
       </Card>
+
+      {hasOwnerProfile && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Your Sound Library</CardTitle>
+          </CardHeader>
+
+          <CardContent className="space-y-3">
+            {sounds.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No sounds uploaded yet. Configure a button and upload your first
+                MP3 or WAV file.
+              </p>
+            ) : (
+              sounds.map((sound) => (
+                <div
+                  key={sound.file_path}
+                  className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {displaySoundLabel(sound)}
+                    </p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {sound.name}
+                    </p>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSoundToDelete(sound)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </Button>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
         <SheetContent className="overflow-y-auto max-h-screen">
@@ -693,20 +885,24 @@ export default function Device() {
                 placeholder="Example: calm piano, short bell, bird chirping..."
               />
               <p className="text-xs text-muted-foreground">
-                This label will be shown in your personal sound library.
+                This label is shown on the device page instead of a confusing
+                filename.
               </p>
             </div>
 
             <div className="space-y-2">
               <Label>Existing sound file</Label>
-              <Select value={tempSoundFile} onValueChange={handleSoundSelect}>
+              <Select
+                value={soundByPath.has(tempSoundFile) ? tempSoundFile : ""}
+                onValueChange={handleSoundSelect}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select from your sounds" />
                 </SelectTrigger>
                 <SelectContent>
                   {sounds.map((sound) => (
                     <SelectItem key={sound.file_path} value={sound.file_path}>
-                      {sound.label || sound.name}
+                      {displaySoundLabel(sound)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -734,9 +930,7 @@ export default function Device() {
                 {tempUploadFile ? (
                   <div className="flex items-center gap-2 justify-center">
                     <Music className="h-4 w-4 text-primary" />
-                    <span className="text-sm truncate">
-                      {tempUploadFile.name}
-                    </span>
+                    <span className="text-sm truncate">{tempUploadFile.name}</span>
                     <button
                       type="button"
                       onClick={() => {
@@ -747,6 +941,10 @@ export default function Device() {
                             ? soundByPath.get(tempSoundFile)?.public_url || null
                             : null
                         );
+
+                        if (fileInputRef.current) {
+                          fileInputRef.current.value = "";
+                        }
                       }}
                     >
                       <X className="h-3 w-3 text-muted-foreground" />
@@ -795,17 +993,57 @@ export default function Device() {
               </div>
             )}
 
-            <Button
-              className="w-full"
-              onClick={handleSave}
-              disabled={!tempSoundFile && !tempUploadFile}
-            >
-              <Save className="h-4 w-4 mr-2" />
-              Save to my device config
-            </Button>
+            <div className="space-y-2">
+              <Button
+                className="w-full"
+                onClick={handleSave}
+                disabled={!tempSoundFile && !tempUploadFile}
+              >
+                <Save className="h-4 w-4 mr-2" />
+                Save to my device config
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={handleClearButton}
+                disabled={!selectedButton?.soundFile}
+              >
+                Clear this button
+              </Button>
+            </div>
           </div>
         </SheetContent>
       </Sheet>
+
+      <AlertDialog
+        open={Boolean(soundToDelete)}
+        onOpenChange={(open) => {
+          if (!open) setSoundToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this sound?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the sound from your library and clears it from any
+              buttons that currently use it. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingSound}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteSound}
+              disabled={deletingSound}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingSound ? "Deleting..." : "Delete sound"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

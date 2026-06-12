@@ -22,10 +22,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Camera, LogIn, Upload, UserPlus, X } from "lucide-react";
+import { Camera, LogIn, Trash2, Upload, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const PHOTO_BUCKET = "parrot-photos";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 const emptyProfile = {
   ownerName: "",
@@ -40,30 +41,59 @@ const emptyProfile = {
 
 type Mode = "choose" | "login" | "register" | "profile";
 
+type ProfileForm = typeof emptyProfile;
+
+function RequiredLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Label>
+      {children} <span className="text-destructive">*</span>
+    </Label>
+  );
+}
+
+function cleanEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
 export default function Profile() {
   const { toast } = useToast();
 
   const [mode, setMode] = useState<Mode>("choose");
-  const [profile, setProfile] = useState(emptyProfile);
+  const [profile, setProfile] = useState<ProfileForm>(emptyProfile);
   const [loginName, setLoginName] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
   const [agreementOpen, setAgreementOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [agreementAccepted, setAgreementAccepted] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [checkingLogin, setCheckingLogin] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState("");
 
   const photoInputRef = useRef<HTMLInputElement>(null);
 
-  const update = (key: string, value: string) => {
+  const update = (key: keyof ProfileForm, value: string) => {
     setProfile((previous) => ({ ...previous, [key]: value }));
   };
 
+  const resetLocalProfile = () => {
+    localStorage.removeItem("parrot_owner_email");
+    setProfile(emptyProfile);
+    setLoginName("");
+    setLoginEmail("");
+    setAgreementAccepted(false);
+    setPhotoFile(null);
+    setPhotoPreviewUrl("");
+    setMode("choose");
+  };
+
   const fillProfileFromData = (data: any, fallbackEmail = "") => {
+    const email = data.email || fallbackEmail;
+
     setProfile({
       ownerName: data.owner_name || "",
-      email: data.email || fallbackEmail,
+      email,
       parrotName: data.parrot_name || "",
       species: data.species || "",
       age: data.age !== null && data.age !== undefined ? String(data.age) : "",
@@ -75,18 +105,19 @@ export default function Profile() {
     setPhotoFile(null);
     setPhotoPreviewUrl(data.parrot_photo_url || "");
     setAgreementAccepted(Boolean(data.agreement_accepted));
-    localStorage.setItem("parrot_owner_email", data.email || fallbackEmail);
+    localStorage.setItem("parrot_owner_email", cleanEmail(email));
+    localStorage.removeItem("researcher_logged_in");
     setMode("profile");
   };
 
   const loadProfileByEmail = async (email: string) => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail) return;
+    const emailToLoad = cleanEmail(email);
+    if (!emailToLoad) return;
 
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
-      .eq("email", cleanEmail)
+      .eq("email", emailToLoad)
       .maybeSingle();
 
     if (error) {
@@ -100,7 +131,7 @@ export default function Profile() {
 
     if (!data) return;
 
-    fillProfileFromData(data, cleanEmail);
+    fillProfileFromData(data, emailToLoad);
   };
 
   useEffect(() => {
@@ -112,10 +143,10 @@ export default function Profile() {
   }, []);
 
   const handleLogin = async () => {
-    const cleanName = loginName.trim().toLowerCase();
-    const cleanEmail = loginEmail.trim().toLowerCase();
+    const enteredName = loginName.trim().toLowerCase();
+    const enteredEmail = cleanEmail(loginEmail);
 
-    if (!cleanName || !cleanEmail) {
+    if (!enteredName || !enteredEmail) {
       toast({
         title: "Missing information",
         description: "Please enter your registered name and email.",
@@ -130,7 +161,7 @@ export default function Profile() {
       const { data, error } = await supabase
         .from("profiles")
         .select("*")
-        .eq("email", cleanEmail)
+        .eq("email", enteredEmail)
         .maybeSingle();
 
       if (error) throw error;
@@ -138,7 +169,8 @@ export default function Profile() {
       if (!data) {
         toast({
           title: "Profile not found",
-          description: "No profile exists with this email. Please register first.",
+          description:
+            "No profile exists with this email yet. Please choose New Profile first.",
           variant: "destructive",
         });
         return;
@@ -146,7 +178,7 @@ export default function Profile() {
 
       const savedName = String(data.owner_name || "").trim().toLowerCase();
 
-      if (savedName !== cleanName) {
+      if (savedName !== enteredName) {
         toast({
           title: "Details do not match",
           description: "The name and email do not match an existing profile.",
@@ -155,11 +187,11 @@ export default function Profile() {
         return;
       }
 
-      fillProfileFromData(data, cleanEmail);
+      fillProfileFromData(data, enteredEmail);
 
       toast({
         title: "Profile found",
-        description: "You can now manage your parrot profile.",
+        description: "You can now manage your parrot profile and device setup.",
       });
     } catch (error) {
       toast({
@@ -213,9 +245,9 @@ export default function Profile() {
       return profile.parrotPhotoUrl;
     }
 
-    const cleanEmail = profile.email.trim().toLowerCase();
+    const email = cleanEmail(profile.email);
     const extension = photoFile.name.split(".").pop() || "jpg";
-    const filePath = `${cleanEmail}/parrot-photo-${Date.now()}.${extension}`;
+    const filePath = `${email}/parrot-photo-${Date.now()}.${extension}`;
 
     const { error: uploadError } = await supabase.storage
       .from(PHOTO_BUCKET)
@@ -224,9 +256,7 @@ export default function Profile() {
         upsert: true,
       });
 
-    if (uploadError) {
-      throw uploadError;
-    }
+    if (uploadError) throw uploadError;
 
     const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(filePath);
 
@@ -244,10 +274,14 @@ export default function Profile() {
   };
 
   const saveProfile = async () => {
-    if (!profile.ownerName.trim() || !profile.email.trim() || !profile.parrotName.trim()) {
+    const ownerName = profile.ownerName.trim();
+    const email = cleanEmail(profile.email);
+    const parrotName = profile.parrotName.trim();
+
+    if (!ownerName || !email || !parrotName) {
       toast({
-        title: "Missing information",
-        description: "Please fill in at least owner name, email, and parrot name.",
+        title: "Missing required information",
+        description: "Please fill in the fields marked with a red asterisk.",
         variant: "destructive",
       });
       return;
@@ -261,14 +295,13 @@ export default function Profile() {
     setSaving(true);
 
     try {
-      const cleanEmail = profile.email.trim().toLowerCase();
       const uploadedPhotoUrl = await uploadParrotPhoto();
 
       const { error } = await supabase.from("profiles").upsert(
         {
-          owner_name: profile.ownerName.trim(),
-          email: cleanEmail,
-          parrot_name: profile.parrotName.trim(),
+          owner_name: ownerName,
+          email,
+          parrot_name: parrotName,
           species: profile.species.trim(),
           age: profile.age ? Number(profile.age) : null,
           gender: profile.gender,
@@ -281,25 +314,24 @@ export default function Profile() {
         { onConflict: "email" }
       );
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
-      localStorage.setItem("parrot_owner_email", cleanEmail);
+      localStorage.setItem("parrot_owner_email", email);
+      localStorage.removeItem("researcher_logged_in");
 
       setProfile((previous) => ({
         ...previous,
-        email: cleanEmail,
+        email,
         parrotPhotoUrl: uploadedPhotoUrl || "",
       }));
-
       setPhotoFile(null);
       setPhotoPreviewUrl(uploadedPhotoUrl || "");
       setMode("profile");
 
       toast({
         title: "Profile saved",
-        description: "Your owner, parrot information, and photo have been saved.",
+        description:
+          "Your owner and parrot information has been saved. You can now configure the device.",
       });
     } catch (error) {
       toast({
@@ -312,66 +344,96 @@ export default function Profile() {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("parrot_owner_email");
-    setProfile(emptyProfile);
-    setLoginName("");
-    setLoginEmail("");
-    setAgreementAccepted(false);
-    setPhotoFile(null);
-    setPhotoPreviewUrl("");
-    setMode("choose");
+  const deleteAccount = async () => {
+    const email = cleanEmail(profile.email);
+
+    if (!email) {
+      resetLocalProfile();
+      return;
+    }
+
+    setDeletingAccount(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/profile/delete`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ owner_email: email }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || "Could not delete account");
+      }
+
+      setDeleteAccountOpen(false);
+      resetLocalProfile();
+
+      toast({
+        title: "Account deleted",
+        description:
+          "The profile, device configuration, uploaded sounds, and device logs were removed.",
+      });
+    } catch (error) {
+      toast({
+        title: "Delete failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Parrot Owner Profile</h1>
+        <h1 className="text-2xl font-bold tracking-tight">
+          Parrot Owner Profile
+        </h1>
         <p className="text-muted-foreground mt-1">
-          Register a new profile or continue with an existing one.
+          Create an owner profile before configuring the device, or log in to an
+          existing profile to continue.
         </p>
       </div>
 
       {mode === "choose" && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">How would you like to continue?</CardTitle>
+            <CardTitle className="text-lg">Choose how to continue</CardTitle>
           </CardHeader>
 
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              className="
-                h-14
-                border-slate-700
-                text-slate-700
-                hover:bg-slate-700
-                hover:text-white
-                font-medium
-              "
-              onClick={() => setMode('login')}
-            >
-              <LogIn className="h-4 w-4 mr-2" />
-              Existing Profile
-            </Button>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              New users should choose <strong>New Profile</strong>. Returning
+              users should choose <strong>Existing Profile</strong> so their
+              sounds and button setup are loaded.
+            </p>
 
-            <Button
-              type="button"
-              variant="outline"
-              className="
-                h-14
-                border-slate-700
-                text-slate-700
-                hover:bg-slate-700
-                hover:text-white
-                font-medium
-              "
-              onClick={startRegister}
-            >
-              <UserPlus className="h-4 w-4 mr-2" />
-              New Profile
-            </Button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 border-slate-700 text-slate-700 hover:bg-slate-700 hover:text-white font-medium"
+                onClick={() => setMode("login")}
+              >
+                <LogIn className="h-4 w-4 mr-2" />
+                Existing Profile
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="h-14 border-slate-700 text-slate-700 hover:bg-slate-700 hover:text-white font-medium"
+                onClick={startRegister}
+              >
+                <UserPlus className="h-4 w-4 mr-2" />
+                New Profile
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -384,11 +446,11 @@ export default function Profile() {
 
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Enter the same name and email you used when registering.
+              Enter the same owner name and email you used when registering.
             </p>
 
             <div className="space-y-2">
-              <Label>Name</Label>
+              <RequiredLabel>Name</RequiredLabel>
               <Input
                 value={loginName}
                 onChange={(event) => setLoginName(event.target.value)}
@@ -397,7 +459,7 @@ export default function Profile() {
             </div>
 
             <div className="space-y-2">
-              <Label>Email</Label>
+              <RequiredLabel>Email</RequiredLabel>
               <Input
                 type="email"
                 value={loginEmail}
@@ -432,15 +494,28 @@ export default function Profile() {
         <>
           {mode === "profile" && (
             <Card>
-              <CardContent className="flex items-center justify-between gap-4 pt-6">
+              <CardContent className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-6">
                 <div>
                   <p className="text-sm font-medium">Current profile</p>
-                  <p className="text-sm text-muted-foreground">{profile.email}</p>
+                  <p className="text-sm text-muted-foreground break-all">
+                    {profile.email}
+                  </p>
                 </div>
 
-                <Button type="button" variant="outline" onClick={logout}>
-                  Switch profile
-                </Button>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <Button type="button" variant="outline" onClick={resetLocalProfile}>
+                    Switch profile
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setDeleteAccountOpen(true)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete account
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )}
@@ -451,9 +526,13 @@ export default function Profile() {
             </CardHeader>
 
             <CardContent className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Fields marked with <span className="text-destructive">*</span> are required.
+              </p>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Name</Label>
+                  <RequiredLabel>Name</RequiredLabel>
                   <Input
                     value={profile.ownerName}
                     onChange={(event) => update("ownerName", event.target.value)}
@@ -462,7 +541,7 @@ export default function Profile() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Email</Label>
+                  <RequiredLabel>Email</RequiredLabel>
                   <Input
                     type="email"
                     value={profile.email}
@@ -484,7 +563,7 @@ export default function Profile() {
 
             <CardContent className="space-y-4">
               <div className="flex items-center gap-6 mb-2">
-                <div className="w-24 h-24 rounded-full bg-muted border-2 border-dashed border-border flex items-center justify-center overflow-hidden">
+                <div className="w-24 h-24 rounded-full bg-muted border-2 border-dashed border-border flex items-center justify-center overflow-hidden shrink-0">
                   {photoPreviewUrl ? (
                     <img
                       src={photoPreviewUrl}
@@ -499,7 +578,7 @@ export default function Profile() {
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Parrot Photo</p>
                   <p className="text-xs text-muted-foreground">
-                    Upload a photo of your parrot. Maximum file size: 5 MB.
+                    Optional. Upload a photo of your parrot. Maximum file size: 5 MB.
                   </p>
 
                   <input
@@ -538,7 +617,7 @@ export default function Profile() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Parrot Name</Label>
+                  <RequiredLabel>Parrot Name</RequiredLabel>
                   <Input
                     value={profile.parrotName}
                     onChange={(event) => update("parrotName", event.target.value)}
@@ -628,7 +707,11 @@ export default function Profile() {
 
           <div className="flex flex-col sm:flex-row gap-2">
             <Button onClick={saveProfile} className="flex-1" disabled={saving}>
-              {saving ? "Saving..." : mode === "register" ? "Create Profile" : "Save Changes"}
+              {saving
+                ? "Saving..."
+                : mode === "register"
+                  ? "Create Profile"
+                  : "Save Changes"}
             </Button>
 
             {mode === "register" && (
@@ -649,7 +732,15 @@ export default function Profile() {
               <div className="max-h-[400px] overflow-y-auto space-y-3 text-left text-sm">
                 <p>
                   This application is used as part of a research project studying
-                  parrot interaction with a sound-playing device. As a user, you agree that the name of the files (not the actual files) you upload and the personal information of your pet can be seen by the researcher.
+                  parrot interaction with a sound-playing device. As a user, you
+                  agree that the names of uploaded files, device configuration,
+                  interaction logs, and your parrot profile information can be
+                  seen by the researcher.
+                </p>
+                <p>
+                  Do not upload private or sensitive audio. You can delete sounds
+                  from the device page and delete your owner account from this
+                  profile page.
                 </p>
               </div>
             </AlertDialogDescription>
@@ -664,6 +755,30 @@ export default function Profile() {
               }}
             >
               I Have Read and Agree
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={deleteAccountOpen} onOpenChange={setDeleteAccountOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete your owner account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove the owner profile, device setup,
+              uploaded sounds, and device logs for {profile.email || "this profile"}.
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingAccount}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={deleteAccount}
+              disabled={deletingAccount}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingAccount ? "Deleting..." : "Delete account"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

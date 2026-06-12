@@ -7,42 +7,59 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+
 export default function ResearchLogin() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [password, setPassword] = useState("");
+  const [checking, setChecking] = useState(false);
 
-  const correctPassword = String(import.meta.env.VITE_RESEARCHER_PASSWORD || "");
-
-  const handleLogin = () => {
-    if (!correctPassword) {
+  const handleLogin = async () => {
+    if (!password.trim()) {
       toast({
-        title: "Missing researcher password",
-        description: "Add VITE_RESEARCHER_PASSWORD to your .env.local file.",
+        title: "Missing password",
+        description: "Please enter the researcher password.",
         variant: "destructive",
       });
       return;
     }
 
-    if (password !== correctPassword) {
+    setChecking(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/research-login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || "Researcher login failed");
+      }
+
+      localStorage.setItem("researcher_logged_in", "true");
+      localStorage.removeItem("parrot_owner_email");
+
       toast({
-        title: "Wrong password",
-        description: "The researcher password is incorrect.",
+        title: "Researcher login successful",
+        description: "You now have access to the researcher dashboard.",
+      });
+
+      navigate("/research");
+    } catch (error) {
+      toast({
+        title: "Login failed",
+        description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
-      return;
+    } finally {
+      setChecking(false);
     }
-
-    localStorage.setItem("researcher_logged_in", "true");
-    localStorage.removeItem("parrot_owner_email");
-
-    toast({
-      title: "Researcher login successful",
-      description: "You now have access to the researcher dashboard.",
-    });
-
-    navigate("/research");
-    window.location.reload();
   };
 
   return (
@@ -57,7 +74,8 @@ export default function ResearchLogin() {
 
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            This area is only for the researcher. Parrot owners do not need to use this page.
+            This area is only for the researcher. The password is checked on the
+            server, so it is not exposed in the frontend bundle.
           </p>
 
           <div className="space-y-2">
@@ -72,8 +90,8 @@ export default function ResearchLogin() {
             />
           </div>
 
-          <Button onClick={handleLogin} className="w-full">
-            Log In as Researcher
+          <Button onClick={handleLogin} className="w-full" disabled={checking}>
+            {checking ? "Checking..." : "Log In as Researcher"}
           </Button>
         </CardContent>
       </Card>

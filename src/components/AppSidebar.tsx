@@ -1,5 +1,6 @@
-import { Cpu, User, BarChart3, Lock, LogOut } from "lucide-react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { BarChart3, Cpu, Lock, LogOut, User } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
   SidebarContent,
@@ -14,7 +15,9 @@ import {
 } from "@/components/ui/sidebar";
 
 function getCurrentOwnerEmail() {
-  return String(localStorage.getItem("parrot_owner_email") || "").toLowerCase();
+  return String(localStorage.getItem("parrot_owner_email") || "")
+    .trim()
+    .toLowerCase();
 }
 
 function isResearcherLoggedIn() {
@@ -22,31 +25,40 @@ function isResearcherLoggedIn() {
 }
 
 export function AppSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile, setOpen, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
 
   const collapsed = state === "collapsed";
   const ownerEmail = getCurrentOwnerEmail();
   const researcher = isResearcherLoggedIn();
 
+  const closeSidebarAfterNavigation = () => {
+    if (isMobile) {
+      setOpenMobile(false);
+      return;
+    }
+
+    // Desktop: collapse back to icon-only after the user chooses a tab.
+    setOpen(false);
+  };
+
   const handleLogout = () => {
     localStorage.removeItem("parrot_owner_email");
     localStorage.removeItem("researcher_logged_in");
-
+    closeSidebarAfterNavigation();
     navigate("/profile");
-    window.location.reload();
   };
 
   const ownerItems = [
     { title: "Device", url: "/", icon: Cpu },
-    { title: "Profile", url: "/profile", icon: User },
+    { title: "Owner Profile / Register", url: "/profile", icon: User },
     { title: "My Stats", url: "/my-stats", icon: BarChart3 },
     { title: "Researcher Login", url: "/research-login", icon: Lock },
   ];
 
   const researcherItems = [
     { title: "Device", url: "/", icon: Cpu },
-    { title: "Research", url: "/research", icon: Lock },
+    { title: "Research Dashboard", url: "/research", icon: Lock },
   ];
 
   const items = researcher ? researcherItems : ownerItems;
@@ -79,6 +91,7 @@ export function AppSidebar() {
                     <NavLink
                       to={item.url}
                       end={item.url === "/"}
+                      onClick={closeSidebarAfterNavigation}
                       className="hover:bg-sidebar-accent/50"
                       activeClassName="bg-sidebar-accent text-sidebar-primary font-medium"
                     >

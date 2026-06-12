@@ -1,16 +1,28 @@
 const http = require("http");
 const path = require("path");
+require("dotenv").config({ path: path.resolve(process.cwd(), ".env.local") });
+require("dotenv").config();
+
 const { createClient } = require("@supabase/supabase-js");
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecret =
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseSecret) {
+  console.log("Current working directory:", process.cwd());
+  console.log("SUPABASE_URL exists:", !!supabaseUrl);
+  console.log("SUPABASE_SECRET_KEY exists:", !!supabaseSecret);
+
   throw new Error(
-    "Missing SUPABASE_URL and SUPABASE_SECRET_KEY Railway variables"
+    "Missing SUPABASE_URL and SUPABASE_SECRET_KEY. Check that .env.local exists in the project root and that dotenv is loaded at the top of server/device-api.cjs."
   );
+}
+
+const supabase = createClient(supabaseUrl, supabaseSecret);
+
+if (!supabaseUrl || !supabaseSecret) {
+  throw new Error("Missing SUPABASE_URL and SUPABASE_SECRET_KEY Railway variables");
 }
 
 const supabaseAdmin = createClient(supabaseUrl, supabaseSecret, {
@@ -22,6 +34,7 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseSecret, {
 });
 
 const SOUND_BUCKET = "parrot-sounds";
+const PHOTO_BUCKET = "parrot-photos";
 
 function send(res, status, data, contentType = "application/json") {
   res.writeHead(status, {
@@ -141,9 +154,7 @@ async function loadOwnerConfig(ownerEmail) {
 async function loadOwnerSounds(ownerEmail) {
   const { data, error } = await supabaseAdmin
     .from("sound_files")
-    .select(
-      "name, label, file_path, public_url, duration_ms, owner_email, created_at"
-    )
+    .select("name, label, file_path, public_url, duration_ms, owner_email, created_at")
     .eq("owner_email", ownerEmail)
     .order("created_at", { ascending: false });
 
@@ -158,6 +169,32 @@ async function findOwnerSound(ownerEmail, requestedName) {
   return sounds.find(
     (sound) => fileNameFromPath(sound.file_path) === requestedName
   );
+}
+
+async function removeStorageFolder(bucket, folder) {
+  const { data, error } = await supabaseAdmin.storage.from(bucket).list(folder, {
+    limit: 1000,
+  });
+
+  if (error) {
+    // If the bucket or folder does not exist, do not stop account deletion.
+    console.warn(`Could not list ${bucket}/${folder}:`, error.message || error);
+    return;
+  }
+
+  const files = (data || [])
+    .filter((item) => item.name)
+    .map((item) => `${folder}/${item.name}`);
+
+  if (files.length === 0) return;
+
+  const { error: removeError } = await supabaseAdmin.storage
+    .from(bucket)
+    .remove(files);
+
+  if (removeError) {
+    console.warn(`Could not remove files from ${bucket}/${folder}:`, removeError.message || removeError);
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -182,6 +219,26 @@ const server = http.createServer(async (req, res) => {
         name: "parrot-device-api",
         storage: "supabase",
       });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/research-login") {
+      const body = await readJsonBody(req);
+      const expectedPassword = String(process.env.RESEARCHER_PASSWORD || "");
+      const suppliedPassword = String(body.password || "");
+
+      if (!expectedPassword) {
+        return send(res, 500, {
+          error: "Missing RESEARCHER_PASSWORD Railway variable",
+        });
+      }
+
+      if (suppliedPassword !== expectedPassword) {
+        return send(res, 401, {
+          error: "Wrong researcher password",
+        });
+      }
+
+      return send(res, 200, { ok: true });
     }
 
     /*
@@ -213,8 +270,6 @@ const server = http.createServer(async (req, res) => {
 
     /*
      * Save an owner's button configuration.
-     * The website currently saves directly to Supabase, but this endpoint
-     * remains available for other clients.
      */
     if (req.method === "POST" && url.pathname === "/api/config") {
       const body = await readJsonBody(req);
@@ -263,9 +318,7 @@ const server = http.createServer(async (req, res) => {
       const storedButtons = await loadOwnerConfig(ownerEmail);
       const sounds = await loadOwnerSounds(ownerEmail);
 
-      const soundNames = sounds.map((sound) =>
-        fileNameFromPath(sound.file_path)
-      );
+      const soundNames = sounds.map((sound) => fileNameFromPath(sound.file_path));
 
       const buttons = Object.fromEntries(
         Object.entries(storedButtons).map(([button, filePath]) => [
@@ -309,6 +362,8 @@ const server = http.createServer(async (req, res) => {
           sound.label ||
           sound.name ||
           fileNameFromPath(sound.file_path).replace(/\.[^.]+$/, ""),
+        file_path: sound.file_path,
+        public_url: sound.public_url,
         duration_ms: Number(sound.duration_ms || 0),
       }));
 
@@ -319,12 +374,120 @@ const server = http.createServer(async (req, res) => {
     }
 
     /*
+     * Delete one sound from a user's library and clear any buttons using it.
+     */
+    if (req.method === "POST" && url.pathname === "/api/sounds/delete") {
+      const body = await readJsonBody(req);
+      const ownerEmail = ownerEmailFromRequest(url, body);
+      const filePath = String(body.file_path || body.filePath || "").trim();
+
+      if (!ownerEmail) {
+        return send(res, 400, { error: "Missing owner_email" });
+      }
+
+      if (!filePath) {
+        return send(res, 400, { error: "Missing file_path" });
+      }
+
+      if (!filePath.startsWith(`${ownerEmail}/`)) {
+        return send(res, 403, {
+          error: "This sound does not belong to the requested owner",
+        });
+      }
+
+      const currentConfig = await loadOwnerConfig(ownerEmail);
+      const nextConfig = Object.fromEntries(
+        Object.entries(currentConfig).map(([button, value]) => [
+          button,
+          value === filePath ? "" : value,
+        ])
+      );
+
+      const { error: configError } = await supabaseAdmin
+        .from("device_configs")
+        .upsert(
+          {
+            owner_email: ownerEmail,
+            buttons: nextConfig,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "owner_email" }
+        );
+
+      if (configError) throw configError;
+
+      const { error: dbError } = await supabaseAdmin
+        .from("sound_files")
+        .delete()
+        .eq("owner_email", ownerEmail)
+        .eq("file_path", filePath);
+
+      if (dbError) throw dbError;
+
+      const { error: storageError } = await supabaseAdmin.storage
+        .from(SOUND_BUCKET)
+        .remove([filePath]);
+
+      if (storageError) {
+        console.warn("Could not remove sound from storage:", storageError.message || storageError);
+      }
+
+      return send(res, 200, {
+        ok: true,
+        owner_email: ownerEmail,
+        deleted_file_path: filePath,
+        buttons: nextConfig,
+      });
+    }
+
+    /*
+     * Delete an owner profile and all data that belongs to it.
+     */
+    if (req.method === "POST" && url.pathname === "/api/profile/delete") {
+      const body = await readJsonBody(req);
+      const ownerEmail = ownerEmailFromRequest(url, body);
+
+      if (!ownerEmail) {
+        return send(res, 400, { error: "Missing owner_email" });
+      }
+
+      const sounds = await loadOwnerSounds(ownerEmail);
+      const soundPaths = sounds.map((sound) => sound.file_path).filter(Boolean);
+
+      if (soundPaths.length > 0) {
+        const { error: storageError } = await supabaseAdmin.storage
+          .from(SOUND_BUCKET)
+          .remove(soundPaths);
+
+        if (storageError) {
+          console.warn("Could not remove one or more sound files:", storageError.message || storageError);
+        }
+      }
+
+      await removeStorageFolder(PHOTO_BUCKET, ownerEmail);
+
+      const deleteOperations = [
+        supabaseAdmin.from("device_configs").delete().eq("owner_email", ownerEmail),
+        supabaseAdmin.from("device_logs").delete().eq("owner_email", ownerEmail),
+        supabaseAdmin.from("sound_files").delete().eq("owner_email", ownerEmail),
+        supabaseAdmin.from("profiles").delete().eq("email", ownerEmail),
+      ];
+
+      const results = await Promise.all(deleteOperations);
+      const firstError = results.find((result) => result.error)?.error;
+
+      if (firstError) throw firstError;
+
+      return send(res, 200, {
+        ok: true,
+        deleted_owner_email: ownerEmail,
+      });
+    }
+
+    /*
      * Download one owner's sound from Supabase Storage.
      */
-    if (
-      req.method === "GET" &&
-      url.pathname.startsWith("/api/sounds/")
-    ) {
+    if (req.method === "GET" && url.pathname.startsWith("/api/sounds/")) {
       const ownerEmail = ownerEmailFromRequest(url);
 
       if (!ownerEmail) {
@@ -354,8 +517,7 @@ const server = http.createServer(async (req, res) => {
       const buffer = Buffer.from(await file.arrayBuffer());
       const extension = path.extname(requestedName).toLowerCase();
 
-      const contentType =
-        extension === ".mp3" ? "audio/mpeg" : "audio/wav";
+      const contentType = extension === ".mp3" ? "audio/mpeg" : "audio/wav";
 
       res.writeHead(200, {
         "Content-Type": contentType,
@@ -367,17 +529,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     /*
-     * Return all logs for the researcher, or one owner's logs when an email
-     * is supplied.
+     * Return all logs for the researcher, or one owner's logs when an email is supplied.
      */
     if (req.method === "GET" && url.pathname === "/api/logs") {
       const ownerEmail = ownerEmailFromRequest(url);
 
       let query = supabaseAdmin
         .from("device_logs")
-        .select(
-          "id, owner_email, device_id, button, soundfile, pressed_at, ms_since_last_sound"
-        )
+        .select("id, owner_email, device_id, button, soundfile, pressed_at, ms_since_last_sound")
         .order("pressed_at", { ascending: false });
 
       if (ownerEmail) {
@@ -424,21 +583,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       const ownerConfig = await loadOwnerConfig(ownerEmail);
-
       const configuredSoundPath = ownerConfig[String(button)] || "";
 
       const soundfile =
-        fileNameFromPath(body.soundfile) ||
-        fileNameFromPath(configuredSoundPath);
+        fileNameFromPath(body.soundfile) || fileNameFromPath(configuredSoundPath);
 
       const pressedAt = normalizeTimestamp(body.timestamp);
-      const msSinceLastSound = Number(
-        body.ms_since_last_sound || 0
-      );
-
-      const deviceId = String(
-        body.device_id || body.deviceId || ""
-      ).trim();
+      const msSinceLastSound = Number(body.ms_since_last_sound || 0);
+      const deviceId = String(body.device_id || body.deviceId || "").trim();
 
       const { data, error } = await supabaseAdmin
         .from("device_logs")
@@ -476,10 +628,7 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
 
     return send(res, 500, {
-      error:
-        error instanceof Error
-          ? error.message
-          : "Internal server error",
+      error: error instanceof Error ? error.message : "Internal server error",
     });
   }
 });
